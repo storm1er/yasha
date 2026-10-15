@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_yasha_color"
+        android:shortcutId="ask"
+        android:shortcutShortLabel="@string/shortcut_ask">
+        <intent
+            android:action="android.intent.action.MAIN"
+            android:targetClass="com.yasha.assist.MainActivity"
+            android:targetPackage="com.yasha.assist">
+            <extra
+                android:name="com.yasha.assist.extra.ASSIST"
+                android:value="shortcut" />
+        </intent>
+    </shortcut>
+</shortcuts>

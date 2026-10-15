@@ -1,0 +1,25 @@
+# Optional overlay: bundled Caddy reverse proxy (for admins without their own
+# TLS terminator). Usage:
+#   docker compose -f compose.yml -f compose.caddy.yml up -d
+# With this overlay, set CADDY_ADDRESS in .env (plain ":80" or your.domain.tld
+# for automatic Let's Encrypt HTTPS). Without it, the default stack publishes
+# web directly on ${PORT:-3000} and your own proxy should terminate TLS.
+
+services:
+  proxy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    env_file: .env
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - web
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

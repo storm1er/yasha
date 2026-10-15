@@ -1,0 +1,1 @@
+ALTER TABLE `api_keys` ADD `last4` text DEFAULT '' NOT NULL;

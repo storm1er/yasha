@@ -1,0 +1,16 @@
+services:
+  gradle:
+    build: .
+    working_dir: /project
+    volumes:
+      - .:/project
+      - gradle-home:/root/.gradle
+      # Persist the debug keystore so reinstalls keep the same signature
+      # (assistant role & notifications survive app updates).
+      - gradle-android-home:/root/.android
+    entrypoint: ["gradle", "--no-daemon"]
+    command: ["assembleDebug"]
+
+volumes:
+  gradle-home:
+  gradle-android-home:

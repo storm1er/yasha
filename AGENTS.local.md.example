@@ -1,0 +1,42 @@
+# AGENTS.local.md — host-specific facts (gitignored)
+
+Copy this file to `AGENTS.local.md` and fill in what applies to **your** machine. An AI agent
+working on this repo should, on first run, walk this list with the developer and create the file
+(see AGENTS.md §First run). Delete any section that doesn't apply. **Never commit this file** —
+`AGENTS.local.md` is gitignored; keep secrets out of it.
+
+## MCP servers available in this environment
+<!-- List the MCP servers an agent can use here (playwright is the recommended baseline). -->
+- **playwright** (local, browser QA) — recommended harness per AGENTS.md.
+- **android-phone** (remote, optional): `http://<PHONE_IP>:8080/mcp` — token at `<TOKEN_PATH>`.
+
+## Device (adb + android-phone MCP — same device, optional)
+- `adb devices` shows: `<SERIAL_OR_IP:PORT>` — <device model / Android version>, wifi-adb.
+  ⚠ Wifi-adb port drifts across reboots: re-check `adb devices` before device QA.
+- Android app under test: `com.yasha.assist` (installed versionName: `<version>`).
+  Before assistant-role QA: `adb shell cmd role get-role-holders android.app.role.ASSISTANT`.
+
+## Deployment / URLs
+- Stack URL used for QA (desktop and/or phone): `<http(s)://host:port>`
+  <!-- Must be reachable from the phone if you do device QA (LAN IP or public dev host). -->
+- Lemonade topology (see AGENTS.md §First stack setup):
+  - [ ] Bundled (`LEMONADE_BASE_URL=http://lemonade:13305`)
+  - [ ] External: `LEMONADE_BASE_URL=<url>` with `lemonade.deploy.replicas: 0` in
+        `compose.override.yml`
+- Is that Lemonade reachable from the agent/container network? `<yes/no — if no, verify backend
+  health through the app (/api/health, /api/lemonade/status, UI badge), never raw curl>`
+- `ADMIN_ALLOW_MUTATIONS` in `.env`: `<true/false>` (false = never attempt mutating Lemonade calls)
+- Ports in use on this host (avoid conflicts): `<e.g. 80, 443, 3000, 13305>`
+
+### Available users
+<!-- Test credentials on the dev instance only. NEVER real passwords or production accounts. -->
+- Admin: `<username>` / `<password>`
+- Basic: `<username>` / `<password>`
+- Test-user naming for scripted QA: prefix `t<phase>_` (AGENTS.md rule 7); DB at `./data/yasha.db`.
+
+## Host notes
+- Repo root: `<absolute path>`
+- Containers only (docker|podman compose); allowed host tools: git, curl, docker|podman, adb,
+  python3 (AGENTS.md rule 2).
+- Compose command used here: `docker compose` | `podman compose`
+- Anything else agents keep tripping on here: `<free text>`

@@ -1,0 +1,39 @@
+name: Bug report
+description: Something is broken
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened? Be specific.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Go to …
+        2. Click …
+        3. See …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: Redact secrets!
+      value: |
+        - Yasha version (or commit):
+        - How it runs: compose / single image / other: …
+        - Backend: bundled Lemonade / external (version): …
+        - Browser & OS (or Android device):
+        - Relevant logs:
+    validations:
+      required: true

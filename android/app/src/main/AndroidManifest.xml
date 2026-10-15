@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <application
+        android:name=".YashaApp"
+        android:icon="@mipmap/ic_launcher"
+        android:label="Yasha"
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="${yashaCleartext}"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+        <!-- M5 adds: MediaProjection foreground service (watch mode) -->
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
+        </activity>
+
+        <!-- ACTION_ASSIST trampoline (also the M3 corner-swipe entry surface) -->
+        <activity
+            android:name=".AssistActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:launchMode="singleInstance"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST_INPUT" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <meta-data
+                android:name="com.android.systemui.action_assist_icon"
+                android:resource="@drawable/ic_yasha_color" />
+        </activity>
+
+        <!-- Default-assistant service (ROLE_ASSISTANT, request from Settings screen) -->
+        <service
+            android:name=".YashaAssistService"
+            android:exported="true"
+            android:label="Yasha"
+            android:permission="android.permission.BIND_VOICE_INTERACTION">
+            <intent-filter>
+                <action android:name="android.service.voice.VoiceInteractionService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.voice_interaction"
+                android:resource="@xml/assist_settings" />
+        </service>
+
+        <!-- Assistant session provider (referenced by @xml/assist_settings) -->
+        <service
+            android:name=".YashaSessionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_VOICE_INTERACTION" />
+
+        <!-- No-op STT required by A15 metadata validation (see class doc) -->
+        <service
+            android:name=".YashaRecognitionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_VOICE_INTERACTION">
+            <intent-filter>
+                <action android:name="android.speech.RecognitionService" />
+            </intent-filter>
+        </service>
+
+        <!-- M3 floaty: frozen screenshot + pill composer + circle-to-ask -->
+        <activity
+            android:name="com.yasha.assist.feature.assist.FloatyActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:showWhenLocked="true"
+            android:theme="@style/Theme.Yasha.Floaty"
+            android:turnScreenOn="true"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- M3 capture backend #2: screenshots-only accessibility service -->
+        <service
+            android:name="com.yasha.assist.feature.assist.YashaAccessibilityService"
+            android:exported="true"
+            android:label="Yasha"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_config" />
+        </service>
+
+        <!-- Fallback trigger: quick-settings tile -->
+        <service
+            android:name=".AssistTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_yasha"
+            android:label="@string/tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>

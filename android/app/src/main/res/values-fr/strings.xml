@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="tile_label">Interroger Yasha</string>
+    <string name="shortcut_ask">Interroger Yasha</string>
+    <string name="notif_channel">Assistant</string>
+    <string name="notif_title">Yasha est prêt</string>
+    <string name="notif_text">Définissez Yasha comme assistant par défaut, ou utilisez la tuile / le raccourci.</string>
+    <string name="notif_ask">Interroger Yasha</string>
+</resources>

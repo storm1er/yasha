@@ -1,0 +1,1 @@
+ALTER TABLE `mcp_oauth` ADD `tokens_expires_at` integer;

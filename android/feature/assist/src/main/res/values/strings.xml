@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_description">Lets Yasha take a screenshot when you ask about what is on screen (floaty / circle-to-ask). No window content is read.</string>
+    <string name="floaty_hint">Ask about what\'s on your screen</string>
+    <string name="floaty_hint_circle">Draw a circle around anything, then ask</string>
+    <string name="floaty_circle_mode">Circle to ask</string>
+    <string name="floaty_selection_ready">Area selected — drag handles to adjust</string>
+    <string name="floaty_clear_selection">Clear selection</string>
+    <string name="floaty_protected">This screen is protected — its content can\'t be captured.</string>
+    <string name="floaty_no_capture">No screenshot available. Enable Yasha\'s accessibility service (screenshots only), or grant the assistant screen-content permission.</string>
+    <string name="floaty_open_accessibility">Open accessibility settings</string>
+    <string name="floaty_crop_too_large">Selection too large after compression.</string>
+    <string name="floaty_crop_failed">Could not crop the screenshot.</string>
+    <string name="floaty_send">Send</string>
+    <string name="floaty_answer_title">Answer</string>
+    <string name="floaty_stop">Stop</string>
+    <string name="floaty_open_yasha">Open in Yasha</string>
+    <string name="floaty_new_question">New question</string>
+    <string name="floaty_ask_failed">Something went wrong. Try again.</string>
+    <string name="floaty_attach_image">Add photo</string>
+    <string name="floaty_picked_image">Photo attached</string>
+    <string name="floaty_remove_image">Remove image</string>
+    <string name="floaty_loading">One moment…</string>
+    <string name="tool_running">running</string>
+    <string name="tool_done">done</string>
+    <string name="tool_error">error</string>
+    <string name="floaty_mic">Start voice input</string>
+    <string name="floaty_listening">Listening… tap the mic to stop</string>
+    <string name="floaty_mic_error">Microphone unavailable. Check app permissions.</string>
+    <string name="floaty_mic_too_short">Too short — say a bit more.</string>
+</resources>

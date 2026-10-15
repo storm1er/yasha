@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_description">Permet à Yasha de capturer l\'écran quand vous posez une question sur ce qui s\'affiche (floaty / interroger une zone). Aucun contenu de fenêtre n\'est lu.</string>
+    <string name="floaty_hint">Posez une question sur ce qui s\'affiche</string>
+    <string name="floaty_hint_circle">Entourez une zone du doigt, puis demandez</string>
+    <string name="floaty_circle_mode">Entourer pour demander</string>
+    <string name="floaty_selection_ready">Zone sélectionnée — ajustez avec les poignées</string>
+    <string name="floaty_clear_selection">Effacer la sélection</string>
+    <string name="floaty_protected">Cet écran est protégé — son contenu ne peut pas être capturé.</string>
+    <string name="floaty_no_capture">Pas de capture disponible. Activez le service d\'accessibilité Yasha (captures d\'écran uniquement) ou l\'autorisation de contenu d\'écran de l\'assistant.</string>
+    <string name="floaty_open_accessibility">Ouvrir les paramètres d\'accessibilité</string>
+    <string name="floaty_crop_too_large">Sélection trop volumineuse après compression.</string>
+    <string name="floaty_crop_failed">Impossible de rogner la capture d\'écran.</string>
+    <string name="floaty_send">Envoyer</string>
+    <string name="floaty_answer_title">Réponse</string>
+    <string name="floaty_stop">Arrêter</string>
+    <string name="floaty_open_yasha">Ouvrir dans Yasha</string>
+    <string name="floaty_new_question">Nouvelle question</string>
+    <string name="floaty_ask_failed">Une erreur est survenue. Réessayez.</string>
+    <string name="floaty_attach_image">Ajouter une photo</string>
+    <string name="floaty_picked_image">Photo jointe</string>
+    <string name="floaty_remove_image">Retirer l\'image</string>
+    <string name="floaty_loading">Un instant…</string>
+    <string name="tool_running">en cours</string>
+    <string name="tool_done">terminé</string>
+    <string name="tool_error">erreur</string>
+    <string name="floaty_mic">Démarrer la saisie vocale</string>
+    <string name="floaty_listening">J\'écoute… touchez le micro pour arrêter</string>
+    <string name="floaty_mic_error">Microphone indisponible. Vérifiez les autorisations de l\'application.</string>
+    <string name="floaty_mic_too_short">Trop court — parlez un peu plus.</string>
+</resources>

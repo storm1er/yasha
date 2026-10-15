@@ -1,0 +1,49 @@
+name: yasha
+
+services:
+  lemonade:
+    image: ghcr.io/lemonade-sdk/lemonade-server:latest
+    volumes:
+      # Persist downloaded models
+      - lemonade-cache:/opt/lemonade/.cache/huggingface
+      # Persist llama binaries
+      - lemonade-llama:/opt/lemonade/llama
+      # Persist backend binaries and runtime cache
+      - lemonade-data:/opt/lemonade/.cache/lemonade
+      # Persist config.json, jobs.json, recipe_options.json, etc.
+      - lemonade-config:/opt/lemonade/.config/lemonade
+    restart: unless-stopped
+    # # For AMD GPU (ROCm) on Linux only, add these in compose.override.yml:
+    # devices:
+    #   - /dev/kfd:/dev/kfd
+    #   - /dev/dri:/dev/dri
+    # group_add:
+    #   - video
+    #   - render
+    # # Use this in compose.override.yml to disable embeded lemonade and use your own
+    # # If you do so, make sure to update LEMONADE_BASE_URL in .env to match your setup
+    # deploy:
+    #   replicas: 0
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: runtime
+    image: yasha:local
+    # Published host port (your TLS proxy should point at this, e.g. PORT=3333;
+    # add compose.caddy.yml for the bundled Caddy option instead).
+    ports:
+      - "${PORT:-3000}:3000"
+    env_file: .env
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  lemonade-cache:
+  lemonade-llama:
+  lemonade-data:
+  lemonade-config:

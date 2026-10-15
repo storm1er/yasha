@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Links the assistant controller (YashaAssistService) to its session
+     provider (YashaSessionService). supportsAssist lets the session answer
+     ACTION_ASSIST / assist-key without voice recognition. -->
+<voice-interaction-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:sessionService="com.yasha.assist.YashaSessionService"
+    android:recognitionService="com.yasha.assist.YashaRecognitionService"
+    android:supportsAssist="true"
+    android:supportsLaunchVoiceAssistFromKeyguard="true" />

@@ -1,0 +1,2 @@
+ALTER TABLE `mcp_servers` ADD `owner_user_id` text REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade;--> statement-breakpoint
+CREATE INDEX `mcp_servers_owner_idx` ON `mcp_servers` (`owner_user_id`);

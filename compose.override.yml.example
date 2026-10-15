@@ -1,0 +1,28 @@
+# Basic override for development: open lemonade ports and use npm run dev for app
+
+services:
+  lemonade:
+    ports:
+      - "13305:13305"
+    # # For AMD GPU (ROCm) on Linux only, also add these in compose.override.yml:
+    # devices:
+    #   - /dev/kfd:/dev/kfd
+    #   - /dev/dri:/dev/dri
+    # group_add:
+    #   - video
+    #   - render
+
+  web:
+    build:
+      target: dev
+    working_dir: /app
+    command: npm run dev
+    volumes:
+      - ./:/app
+      - yasha_node_modules:/app/node_modules
+    # ports come from compose.yml (${PORT:-3000}:3000) — dev stays on :3000
+    env_file: .env
+    init: true
+
+volumes:
+  yasha_node_modules:

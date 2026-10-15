@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="tile_label">Ask Yasha</string>
+    <string name="shortcut_ask">Ask Yasha</string>
+    <string name="notif_channel">Assistant</string>
+    <string name="notif_title">Yasha is ready</string>
+    <string name="notif_text">Set Yasha as the default assistant, or use the tile / shortcut.</string>
+    <string name="notif_ask">Ask Yasha</string>
+</resources>

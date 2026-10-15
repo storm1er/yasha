@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <defs>
+    <clipPath id="clover">
+      <path d="M12 5.075A5.2 5.2 0 1 0 5.075 12A5.2 5.2 0 1 0 12 18.925A5.2 5.2 0 1 0 18.925 12A5.2 5.2 0 1 0 12 5.075Z"/>
+    </clipPath>
+    <radialGradient id="up" cx="12" cy="4.9" r="10" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#EA4335"/>
+      <stop offset=".3" stop-color="#EA4335" stop-opacity=".92"/>
+      <stop offset=".62" stop-color="#EA4335" stop-opacity=".5"/>
+      <stop offset="1" stop-color="#EA4335" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="down" cx="12" cy="19.1" r="10" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#34A853"/>
+      <stop offset=".3" stop-color="#34A853" stop-opacity=".92"/>
+      <stop offset=".62" stop-color="#34A853" stop-opacity=".5"/>
+      <stop offset="1" stop-color="#34A853" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="left" cx="4.9" cy="12" r="10" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FBBC04"/>
+      <stop offset=".3" stop-color="#FBBC04" stop-opacity=".92"/>
+      <stop offset=".62" stop-color="#FBBC04" stop-opacity=".5"/>
+      <stop offset="1" stop-color="#FBBC04" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="right" cx="19.1" cy="12" r="10" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4285F4"/>
+      <stop offset=".3" stop-color="#4285F4" stop-opacity=".92"/>
+      <stop offset=".62" stop-color="#4285F4" stop-opacity=".5"/>
+      <stop offset="1" stop-color="#4285F4" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <g clip-path="url(#clover)">
+    <rect width="24" height="24" fill="url(#up)"/>
+    <rect width="24" height="24" fill="url(#down)"/>
+    <rect width="24" height="24" fill="url(#left)"/>
+    <rect width="24" height="24" fill="url(#right)"/>
+  </g>
+</svg>
