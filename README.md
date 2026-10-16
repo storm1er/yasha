@@ -14,7 +14,12 @@ Self-hosted · Private · Multi-language (en/fr) · Web + Android
 
 </div>
 
-<!-- TODO: add screenshots (web chat light/dark + Android) under docs/images/ -->
+> **Why?** Like [Immich](https://immich.app) is to Google Photos, Yasha aims to be my Google
+> Gemini: a Gemini-like assistant you host yourself and share with your household or family —
+> streaming chat, voice, memory, per-user accounts and a companion Android app — without giving
+> anyone's conversations to a big-tech app. Your data, your server, your family's assistant.
+
+![Yasha — the "Meet Yasha" home screen with the chat composer](docs/images/hero-empty.png)
 
 ## Features
 
@@ -26,10 +31,35 @@ Self-hosted · Private · Multi-language (en/fr) · Web + Android
   (docs at `/docs/api`)
 - 🧠 Model routing via Lemonade (Fast/Smart pickers), health badge for backend status
 - 🎙️ Voice input sent natively to audio-capable models — no transcription service to deploy
-- 🧩 Memory & Gemini takeout import, background job queue
+- 🧩 Memory & Gemini import, background job queue
 - 🔎 Agentic tools via MCP (builtin ketch search server, admin-managed, per-user opt-out)
 - 🤖 Companion Android assistant app (overlay mic, circle-to-ask, per-user APK builds)
 - 🍋 Bundled Lemonade server container — or point Yasha at your own instance
+
+## Screenshots
+
+### Web
+
+<table>
+  <tr>
+    <td><img src="docs/images/chat-light.png" width="440" alt="Web chat with a streaming answer, code blocks and copy buttons (light theme)"></td>
+    <td><img src="docs/images/chat-dark.png" width="440" alt="Same conversation in dark theme"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/chat-fr.png" width="440" alt="French conversation with rich markdown — headings, lists, tables, code"></td>
+    <td><img src="docs/images/settings.png" width="440" alt="Settings: MCP tools, personal Android app download, Gemini import"></td>
+  </tr>
+</table>
+
+### Android companion app
+
+<table>
+  <tr>
+    <td><img src="docs/images/android-home.png" width="210" alt="Android app home screen — personal greeting and ask bar"></td>
+    <td><img src="docs/images/android-chat.png" width="210" alt="Android chat with a streamed answer, copy & share actions"></td>
+    <td><img src="docs/images/android-drawer.png" width="210" alt="Android drawer — thread history synced with the web"></td>
+  </tr>
+</table>
 
 ## Quickstart (self-hosted — no source checkout needed)
 
