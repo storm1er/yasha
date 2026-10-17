@@ -10,3 +10,8 @@ generated automatically by CI from Conventional Commits landing on `main`
 ### Bug Fixes
 - Settings > General > Phone > assistant btn now redirect to defaultApp system menu first. (39bbd2d)
 
+## [0.1.0] - 2026-10-16
+
+### Features
+- **init:** Initial commit. (1ac13ba)
+

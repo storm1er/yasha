@@ -59,11 +59,11 @@ jobs:
 
       # Regenerate the full CHANGELOG.md from tagged history + open the GitHub
       # release with the new section as its notes (git-cliff, config: cliff.toml).
+      # No --latest here: it would emit only the newest section and the OUTPUT
+      # redirect would then wipe every older release from the file.
       # OUTPUT is the action's documented way to redirect git-cliff's stdout.
       - name: Generate changelog
         uses: orhun/git-cliff-action@v4
-        with:
-          args: --latest
         env:
           OUTPUT: CHANGELOG.md
 
@@ -73,8 +73,18 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -eu
-          # Notes = the newest `## [x.y.z]` section of the generated CHANGELOG.md
-          awk '/^## \[/{c++} c==1 {print}' CHANGELOG.md > "release-notes-v${VERSION}.md"
+          # Notes = this version's section of the regenerated CHANGELOG.md
+          awk -v v="${VERSION}" '
+            index($0, "## [" v "]") == 1 { p = 1; print; next }
+            p && /^## \[/ { exit }
+            p { print }
+          ' CHANGELOG.md > "release-notes-v${VERSION}.md"
+          # Docs/maintenance-only releases produce no rendered section: keep a
+          # non-empty body for the GitHub release.
+          if [ ! -s "release-notes-v${VERSION}.md" ]; then
+            echo "_No notable changes in this release (documentation/maintenance only)._" \
+              > "release-notes-v${VERSION}.md"
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if git diff --quiet -- CHANGELOG.md; then
