@@ -58,6 +58,8 @@ Self-hosted · Private · Multi-language (en/fr) · Web + Android
     <td><img src="docs/images/android-home.png" width="210" alt="Android app home screen — personal greeting and ask bar"></td>
     <td><img src="docs/images/android-chat.png" width="210" alt="Android chat with a streamed answer, copy & share actions"></td>
     <td><img src="docs/images/android-drawer.png" width="210" alt="Android drawer — thread history synced with the web"></td>
+    <td><img src="docs/images/android-assistant-draw.png" width="210" alt="Android assistant with a selected part of screen"></td>
+    <td><img src="docs/images/android-assistant-response.png" width="210" alt="Android assistant awnsering to the selected screen part"></td>
   </tr>
 </table>
 
