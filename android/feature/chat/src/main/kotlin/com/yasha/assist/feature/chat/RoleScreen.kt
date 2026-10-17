@@ -56,16 +56,18 @@ fun PhoneSettingsBody() {
             onClick = {
                 // Android 14+ marks ROLE_ASSISTANT requestable=false in roles.xml:
                 // createRequestRoleIntent is refused for EVERY app (HA included).
-                // The supported path is the permission-controller default-app picker.
+                // LAND on the "Default apps" screen (Settings → General → phone →
+                // Default apps); the role-name picker intent jumps past it to the
+                // assistant sub-screen, so it is only the fallback here.
+                val defaultApps = Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 val picker = Intent(RoleGate.ACTION_MANAGE_DEFAULT_APP)
                     .putExtra(RoleGate.EXTRA_ROLE_NAME, RoleManager.ROLE_ASSISTANT)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                val fallback = Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 try {
-                    launcher.launch(picker)
+                    launcher.launch(defaultApps)
                 } catch (_: ActivityNotFoundException) {
-                    launcher.launch(fallback)
+                    launcher.launch(picker)
                 }
             },
             enabled = available && !held,
