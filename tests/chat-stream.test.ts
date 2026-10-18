@@ -282,7 +282,7 @@ describe("chat happy path (new thread)", () => {
 });
 
 describe("chat upstream failures", () => {
-  it("connect failure: user message rolled back, error event", async () => {
+  it("connect failure: user message kept with error annotation", async () => {
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
     mock.route(CHAT, () => {
@@ -291,18 +291,22 @@ describe("chat upstream failures", () => {
     const res = await postChat(chatBody());
     const events = await drain(res);
     expect(events.some((e) => e.error === "upstream_connect")).toBe(true);
-    expect(userMessages((events[0] as { threadId: string }).threadId).length).toBe(0);
+    const um = userMessages((events[0] as { threadId: string }).threadId);
+    expect(um.length).toBe(1);
+    expect(um[0].metaJson).toContain('"error":"upstream_connect"');
     expect(hasInFlightGeneration(user.userId)).toBe(false);
   });
 
-  it("upstream 500: status error event + rollback", async () => {
+  it("upstream 500: status error event + marked user message", async () => {
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
     mock.route(CHAT, () => new Response("nope", { status: 500 }));
     const res = await postChat(chatBody());
     const events = await drain(res);
     expect(events.some((e) => e.error === "upstream_status_500")).toBe(true);
-    expect(userMessages((events[0] as { threadId: string }).threadId).length).toBe(0);
+    const um = userMessages((events[0] as { threadId: string }).threadId);
+    expect(um.length).toBe(1);
+    expect(um[0].metaJson).toContain('"error":"upstream_status_500"');
   });
 
   it("client abort before upstream responds: silent cleanup, message kept", async () => {
@@ -382,7 +386,7 @@ describe("chat upstream failures", () => {
     expect(asst[0].metaJson).toContain("aborted");
   });
 
-  it("stream fails with zero content: rollback + error", async () => {
+  it("stream fails with zero content: message kept + marked, error event", async () => {
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
     const stream = streamResponse();
@@ -403,20 +407,24 @@ describe("chat upstream failures", () => {
     await pump;
     expect(text).toContain('"error":"upstream_stream"');
     const threadId = /"threadId":"([^"]+)"/.exec(text)![1];
-    expect(userMessages(threadId).length).toBe(0);
+    const um = userMessages(threadId);
+    expect(um.length).toBe(1);
+    expect(um[0].metaJson).toContain('"error":"upstream_stream"');
   });
 
-  it("empty completion deletes user message", async () => {
+  it("empty completion keeps the user message with an error annotation", async () => {
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
     mock.route(CHAT, () => sseCompletion(""));
     const res = await postChat(chatBody());
     const events = await drain(res);
     expect(events.some((e) => e.error === "empty_response")).toBe(true);
-    expect(userMessages((events[0] as { threadId: string }).threadId).length).toBe(0);
+    const um = userMessages((events[0] as { threadId: string }).threadId);
+    expect(um.length).toBe(1);
+    expect(um[0].metaJson).toContain('"error":"empty_response"');
   });
 
-  it("first-token timeout aborts the stuck stream", async () => {
+  it("first-token timeout: 'timeout' error event, message kept + marked", async () => {
     setSetting("chat.firstTokenTimeoutMs", "1000");
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
@@ -424,9 +432,50 @@ describe("chat upstream failures", () => {
     bindStream(mock, stream);
     const res = await postChat(chatBody());
     const events = await drain(res); // no data ever → timer fires at 1s, abort errors the body
-    expect(events.some((e) => e.error === "upstream_stream")).toBe(true);
+    expect(events.some((e) => e.error === "timeout")).toBe(true);
     const threadId = (events[0] as { threadId: string }).threadId;
-    expect(userMessages(threadId).length).toBe(0);
+    const um = userMessages(threadId);
+    expect(um.length).toBe(1);
+    expect(um[0].metaJson).toContain('"error":"timeout"');
+  });
+
+  it("first-token timeout during upstream connect: 'timeout' event", async () => {
+    setSetting("chat.firstTokenTimeoutMs", "300");
+    const mock = mockLemonade();
+    mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
+    mock.route(CHAT, async (_url, call) => {
+      await untilAborted(call.signal);
+      throw new Error("aborted mid-connect");
+    });
+    const res = await postChat(chatBody());
+    const events = await drain(res);
+    expect(events.some((e) => e.error === "timeout")).toBe(true);
+    const um = userMessages((events[0] as { threadId: string }).threadId);
+    expect(um.length).toBe(1);
+    expect(um[0].metaJson).toContain('"error":"timeout"');
+  });
+
+  it("SSE heartbeat comments keep a silent stream alive", async () => {
+    setSetting("chat.sseHeartbeatMs", "50");
+    const mock = mockLemonade();
+    mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
+    const stream = streamResponse(); // never pushes a token
+    bindStream(mock, stream);
+    const res = await postChat(chatBody());
+    const reader = res.body!.getReader();
+    const dec = new TextDecoder();
+    let text = "";
+    const deadline = Date.now() + 5000;
+    while (!text.includes(": ping") && Date.now() < deadline) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += dec.decode(value, { stream: true });
+    }
+    expect(text).toContain(": ping");
+    reader.releaseLock();
+    await res.body!.cancel(); // cancel must clear the interval (cleanup path)
+    await delay(150);
+    stream.done();
   });
 
   it("client cancels the response body: partial text persisted as aborted", async () => {
@@ -506,6 +555,77 @@ describe("chat upstream failures", () => {
     await drain(res2);
     await delay(20);
     expect(db.select().from(jobs).where(eq(jobs.type, "chat.title_generation")).all().length).toBe(1); // dedupe absorbed
+  });
+});
+
+describe("retry of a failed turn replaces the trailing user row", () => {
+  const pngA = `data:image/png;base64,${Buffer.from([1, 2, 3]).toString("base64")}`;
+  const pngB = `data:image/png;base64,${Buffer.from([9, 9, 9]).toString("base64")}`;
+
+  function seedThread(id: string) {
+    const t = Date.now();
+    db.insert(threads).values({ id, userId: user.userId, model: "fast-model.test", title: "x", createdAt: new Date(t), updatedAt: new Date(t) }).run();
+  }
+  function seedUser(id: string, threadId: string, content: string, metaJson: string | null) {
+    db.insert(messages).values({ id, threadId, role: "user", content, metaJson, createdAt: new Date() }).run();
+  }
+  function mockOk() {
+    const mock = mockLemonade();
+    mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }, { id: "vision-model.test", vision: true }]));
+    mock.route(CHAT, () => sseCompletion("ok"));
+    return mock;
+  }
+
+  it("identical retry replaces the trailing user message (null meta)", async () => {
+    mockOk();
+    seedThread("th-r1");
+    seedUser("m-r1", "th-r1", "hello there", null);
+    await drain(await postChat(chatBody({ threadId: "th-r1" })));
+    const rows = userMessages("th-r1");
+    expect(rows.length).toBe(1);
+    expect(rows[0].id).not.toBe("m-r1");
+  });
+
+  it("different text keeps both rows", async () => {
+    mockOk();
+    seedThread("th-r2");
+    seedUser("m-r2", "th-r2", "different", null);
+    await drain(await postChat(chatBody({ threadId: "th-r2" })));
+    expect(userMessages("th-r2").length).toBe(2);
+  });
+
+  it("stored images differ in count → no replace", async () => {
+    mockOk();
+    seedThread("th-r3");
+    seedUser("m-r3", "th-r3", "hello there", JSON.stringify({ images: [pngA] }));
+    await drain(await postChat(chatBody({ threadId: "th-r3" })));
+    expect(userMessages("th-r3").length).toBe(2);
+  });
+
+  it("same image count but different bytes → no replace", async () => {
+    mockOk();
+    seedThread("th-r4");
+    seedUser("m-r4", "th-r4", "hello there", JSON.stringify({ images: [pngA] }));
+    await drain(await postChat(chatBody({ threadId: "th-r4", attachments: [pngB] })));
+    expect(userMessages("th-r4").length).toBe(2);
+  });
+
+  it("identical retry with the same image → replace", async () => {
+    mockOk();
+    seedThread("th-r5");
+    seedUser("m-r5", "th-r5", "hello there", JSON.stringify({ images: [pngA] }));
+    await drain(await postChat(chatBody({ threadId: "th-r5", attachments: [pngA] })));
+    const rows = userMessages("th-r5");
+    expect(rows.length).toBe(1);
+    expect(rows[0].id).not.toBe("m-r5");
+  });
+
+  it("stored audio vs audio-less retry → no replace", async () => {
+    mockOk();
+    seedThread("th-r6");
+    seedUser("m-r6", "th-r6", "hello there", JSON.stringify({ audio: "data:audio/wav;base64,AAA" }));
+    await drain(await postChat(chatBody({ threadId: "th-r6" })));
+    expect(userMessages("th-r6").length).toBe(2);
   });
 });
 

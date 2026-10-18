@@ -35,6 +35,7 @@ const MAX_LEN = 200;
 const INT_BOUNDS: Partial<Record<(typeof INT_SETTING_KEYS)[number], [number, number]>> = {
   "chat.windowMessages": [1, 200],
   "chat.firstTokenTimeoutMs": [1000, 3_600_000],
+  "chat.sseHeartbeatMs": [100, 600_000],
   "chat.maxImagesPerMessage": [1, 10],
   "chat.maxWindowImages": [1, 40],
   "chat.maxUploadBytes": [1_048_576, 104_857_600],

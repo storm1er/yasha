@@ -3,6 +3,12 @@ package com.yasha.assist.feature.chat
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -484,7 +490,7 @@ private fun ChatScreen(vm: ChatViewModel, state: ChatUiState, modifier: Modifier
         ) {
             val lastId = state.messages.lastOrNull()?.id
             items(state.messages, key = { it.id }) { msg ->
-                MessageRow(msg, isLast = msg.id == lastId, onRetryTranscribe = vm::retryTranscribe)
+                MessageRow(msg, isLast = msg.id == lastId, onRetryTranscribe = vm::retryTranscribe, onRetryTurn = vm::retryTurn)
             }
         }
         Composer(vm, state, Modifier.fillMaxWidth())
@@ -497,7 +503,8 @@ private fun ToolChips(tools: List<UiTool>) {
     val runningLabel = stringResource(R.string.tool_running)
     val doneLabel = stringResource(R.string.tool_done)
     val errorLabel = stringResource(R.string.tool_error)
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // One chip per row (issue #2): inline chips overflowed narrow screens.
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp), horizontalAlignment = Alignment.Start) {
         tools.forEach { tool ->
             val label = when (tool.status) {
                 "running" -> runningLabel
@@ -509,7 +516,9 @@ private fun ToolChips(tools: List<UiTool>) {
                 else -> palette.disclaimer
             }
             Row(
-                Modifier.clip(RoundedCornerShape(999.dp)).background(palette.userBubble.copy(alpha = 0.35f))
+                Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(palette.userBubble.copy(alpha = 0.35f))
                     .padding(horizontal = 10.dp, vertical = 5.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -530,7 +539,7 @@ private fun ToolChips(tools: List<UiTool>) {
 }
 
 @Composable
-private fun MessageRow(msg: UiMessage, isLast: Boolean, onRetryTranscribe: (String) -> Unit) {
+private fun MessageRow(msg: UiMessage, isLast: Boolean, onRetryTranscribe: (String) -> Unit, onRetryTurn: (String) -> Unit) {
     val palette = LocalYashaPalette.current
     val context = LocalContext.current
     val appName = stringResource(R.string.app_name)
@@ -539,19 +548,42 @@ private fun MessageRow(msg: UiMessage, isLast: Boolean, onRetryTranscribe: (Stri
     if (msg.role == "user") {
         Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.End) {
             Column(
-                Modifier.widthIn(max = 320.dp).clip(RoundedCornerShape(28.dp)).background(palette.userBubble)
-                    .padding(horizontal = 20.dp, vertical = 13.dp),
+                Modifier.widthIn(max = 320.dp),
+                horizontalAlignment = Alignment.End,
             ) {
-                if (msg.images.isNotEmpty()) {
-                    msg.images.forEach { url -> AttachmentThumb(url, Modifier.size(160.dp).clip(RoundedCornerShape(20.dp))) }
-                    if (msg.text.isNotEmpty()) Spacer(Modifier.height(10.dp))
+                Column(
+                    Modifier
+                        .widthIn(max = 320.dp)
+                        .clip(RoundedCornerShape(28.dp)).background(palette.userBubble)
+                        .padding(horizontal = 20.dp, vertical = 13.dp),
+                ) {
+                    if (msg.images.isNotEmpty()) {
+                        msg.images.forEach { url -> AttachmentThumb(url, Modifier.size(160.dp).clip(RoundedCornerShape(20.dp))) }
+                        if (msg.text.isNotEmpty()) Spacer(Modifier.height(10.dp))
+                    }
+                    if (msg.audio != null) {
+                        VoiceMessage(msg, onRetry = { onRetryTranscribe(msg.id) })
+                        if (msg.text.isNotEmpty()) Spacer(Modifier.height(10.dp))
+                    }
+                    if (msg.text.isNotEmpty()) {
+                        Text(msg.text, style = MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 24.sp))
+                    }
                 }
-                if (msg.audio != null) {
-                    VoiceMessage(msg, onRetry = { onRetryTranscribe(msg.id) })
-                    if (msg.text.isNotEmpty()) Spacer(Modifier.height(10.dp))
-                }
-                if (msg.text.isNotEmpty()) {
-                    Text(msg.text, style = MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 24.sp))
+                msg.turnError?.let { code ->
+                    Row(
+                        Modifier.padding(top = 6.dp, end = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            stringResource(if (code == "timeout") R.string.turn_timeout else R.string.error_upstream),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        TextButton(onClick = { onRetryTurn(msg.id) }, modifier = Modifier.height(28.dp)) {
+                            Text(stringResource(R.string.job_retry), style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
                 }
             }
         }
@@ -567,11 +599,17 @@ private fun MessageRow(msg: UiMessage, isLast: Boolean, onRetryTranscribe: (Stri
                 ToolChips(msg.tools)
                 Spacer(Modifier.height(8.dp))
             }
-            YashaMarkdown(
-                content = msg.text,
-                streaming = msg.streaming,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            if (msg.streaming && msg.text.isEmpty()) {
+                // Awaiting the first token: animated shimmer (web parity);
+                // the old " ▌" cursor on empty text rendered as a black block.
+                ThinkingLoader()
+            } else {
+                YashaMarkdown(
+                    content = msg.text,
+                    streaming = msg.streaming,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
             if (!msg.streaming && msg.text.isNotEmpty()) {
                 Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
                     ActionIcon(painterResource(R.drawable.ic_copy), stringResource(R.string.copy_action)) { copyText(context, msg.text, appName, copiedMsg) }
@@ -595,6 +633,33 @@ private fun ActionIcon(painter: Painter, desc: String, onClick: () -> Unit) {
     val palette = LocalYashaPalette.current
     Box(Modifier.size(36.dp).clip(CircleShape).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
         Icon(painter, desc, tint = palette.iconGray, modifier = Modifier.size(20.dp))
+    }
+}
+
+// Awaiting-first-token loader: a shimmer bar sweeping a highlight, mirroring
+// the web `.shimmer` class (1.4 s cycle, ~10 % foreground highlight). Drawn on
+// a Canvas so per-frame animation stays in the draw phase (ANR-safe).
+@Composable
+private fun ThinkingLoader() {
+    val transition = rememberInfiniteTransition(label = "thinking")
+    val slide by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1400, easing = FastOutSlowInEasing), RepeatMode.Restart),
+        label = "shimmer",
+    )
+    val base = MaterialTheme.colorScheme.surfaceVariant
+    val highlight = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f)
+    Canvas(Modifier.width(192.dp).height(14.dp).clip(CircleShape)) {
+        drawRect(base.copy(alpha = 0.7f))
+        val x = (slide * 2f - 1f) * size.width
+        drawRect(
+            Brush.linearGradient(
+                listOf(Color.Transparent, highlight, Color.Transparent),
+                start = Offset(x, 0f),
+                end = Offset(x + size.width, 0f),
+            ),
+        )
     }
 }
 

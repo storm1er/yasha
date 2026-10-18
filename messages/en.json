@@ -80,6 +80,7 @@
     "openMenu": "Open menu",
     "error": "Something went wrong. The model may be down or too slow.",
     "retry": "Retry",
+    "turnTimeout": "LLM timed out. Retry?",
     "rename": "Rename",
     "delete": "Delete",
     "threadNotFound": "Conversation not found",

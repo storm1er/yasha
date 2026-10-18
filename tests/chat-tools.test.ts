@@ -275,7 +275,8 @@ describe("chat tool loop", () => {
     expect(mock.calls.filter((c) => c.url.includes(CHAT))).toHaveLength(2);
     expect(vi.mocked(runToolCall)).toHaveBeenCalledTimes(1);
     const userMsgs = db.select().from(messages).where(eq(messages.role, "user")).all();
-    expect(userMsgs).toHaveLength(0); // cutoff with no final text → turn discarded
+    expect(userMsgs).toHaveLength(1); // turn kept + annotated so the user can retry
+    expect(userMsgs[0].metaJson).toContain('"error":"empty_response"');
   });
 
   it("4xx with tools → silent retry without tools, model remembered", async () => {

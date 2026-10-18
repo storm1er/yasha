@@ -80,6 +80,7 @@
     "openMenu": "Ouvrir le menu",
     "error": "Une erreur est survenue. Le modèle est peut-être indisponible ou trop lent.",
     "retry": "Réessayer",
+    "turnTimeout": "Le LLM a expiré. Réessayer ?",
     "rename": "Renommer",
     "delete": "Supprimer",
     "threadNotFound": "Conversation introuvable",

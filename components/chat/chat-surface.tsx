@@ -28,6 +28,9 @@ type ChatMessage = {
   audioCaptionPending?: boolean;
   tools?: ToolChip[];
   streaming?: boolean;
+  /** Set when the assistant turn for this user message failed upstream
+   *  (persisted in meta.error) — renders the red retry notice. */
+  turnError?: string;
 };
 
 type ServerEvent = {
@@ -53,6 +56,7 @@ type ServerMessage = {
     audio?: unknown;
     audioTranscript?: unknown;
     audioTranscriptFailed?: unknown;
+    error?: unknown;
   } | null;
 };
 
@@ -64,6 +68,7 @@ function mapMessage(m: ServerMessage): ChatMessage {
   const audioTranscript =
     typeof m.meta?.audioTranscript === "string" ? m.meta!.audioTranscript : undefined;
   const audioTranscriptFailed = m.meta?.audioTranscriptFailed === true;
+  const turnError = typeof m.meta?.error === "string" ? m.meta.error : undefined;
   const tools = Array.isArray(m.meta?.tools)
     ? m.meta!.tools!.filter(
         (t): t is ToolChip & { ok: boolean } =>
@@ -82,6 +87,7 @@ function mapMessage(m: ServerMessage): ChatMessage {
     audio,
     audioTranscript,
     audioTranscriptFailed,
+    turnError,
     tools: tools?.length
       ? tools.map((t) => ({ server: t.server, name: t.name, status: t.ok ? ("done" as const) : ("error" as const) }))
       : undefined,
@@ -167,7 +173,7 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
   const [threadModel, setThreadModel] = useState<string | null>(null);
   const [lightbox, setLightbox] = useState<string | null>(null);
   const [loadingHistory, setLoadingHistory] = useState(initialThreadId !== null);
-  const lastFailed = useRef<{ text: string; images?: string[]; audio?: string } | null>(null);
+  const lastFailed = useRef<{ id: string; text: string; images?: string[]; audio?: string } | null>(null);
 
   const threadIdRef = useRef<string | null>(initialThreadId);
   const abortRef = useRef<AbortController | null>(null);
@@ -276,6 +282,22 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
     [pollCaptions]
   );
 
+  /** Reload a thread after a failed turn so the server-persisted error
+   *  annotation (meta.error) renders as the in-thread retry notice. */
+  const resyncThread = useCallback(async (threadId: string) => {
+    try {
+      const res = await fetch(`/api/threads/${threadId}`, { cache: "no-store" });
+      if (!res.ok) {
+        setError("error");
+        return;
+      }
+      const data = (await res.json()) as { messages: ServerMessage[] };
+      setMessages(data.messages.map(mapMessage));
+    } catch {
+      setError("error");
+    }
+  }, []);
+
   const send = useCallback(
     async (rawText: string, images?: string[], audioUrl?: string) => {
       const text = rawText.trim();
@@ -299,13 +321,14 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
       abortRef.current = ctrl;
       setStreaming(true);
       let assistantStarted = false;
+      let sseError: string | null = null;
 
       const fail = () => {
         setError("error");
-        lastFailed.current = { text, images: imgs, audio };
+        lastFailed.current = { id: tempUserId, text, images: imgs, audio };
+        // The sent message stays visible next to the error + Retry action.
         setMessages((prev) =>
           prev
-            .filter((m) => m.id !== tempUserId)
             .filter((m) => !(m.id === tempAssistantId && m.content === ""))
             .map((m) => (m.id === tempAssistantId ? { ...m, streaming: false } : m))
         );
@@ -393,7 +416,9 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
             );
           }
           if (ev.error) {
-            fail();
+            // The server kept the user message and annotated it with the error
+            // code; re-sync the thread so the failure notice renders in place.
+            sseError = String(ev.error);
           }
         }
       }
@@ -420,14 +445,25 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
           const gen = ++pollGenRef.current;
           void pollCaptions(tid, () => pollGenRef.current !== gen || threadIdRef.current !== tid);
         }
+        if (sseError && threadIdRef.current) void resyncThread(threadIdRef.current);
       }
     },
-    [streaming, router, shell, pollCaptions]
+    [streaming, router, shell, pollCaptions, resyncThread]
   );
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
   }, []);
+
+  /** Resend a user turn (retry after failure / regenerate): a trailing failed
+   *  row is dropped from the list first — the server replaces it on the wire. */
+  function retryTurn(m: ChatMessage) {
+    if (streaming) return;
+    setError(null);
+    lastFailed.current = null;
+    setMessages((prev) => (prev.at(-1)?.id === m.id ? prev.filter((x) => x.id !== m.id) : prev));
+    void send(m.content, m.images, m.audio);
+  }
 
   const startNewChat = useCallback(() => {
     // Reset local state first: after the first message the thread URL is set
@@ -497,7 +533,7 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
 
   function regenerate() {
     if (!lastUserMsg || streaming) return;
-    void send(lastUserMsg.content, lastUserMsg.images, lastUserMsg.audio);
+    retryTurn(lastUserMsg);
   }
 
   const noVisionWarning = caps?.noVision ? (
@@ -653,6 +689,22 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
                           {m.content}
                         </div>
                       )}
+                      {m.turnError && (
+                        <p
+                          data-testid="turn-error-notice"
+                          className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-destructive"
+                        >
+                          <span>{m.turnError === "timeout" ? t("turnTimeout") : t("error")}</span>
+                          <button
+                            type="button"
+                            data-testid="turn-error-retry"
+                            className="font-medium underline underline-offset-2"
+                            onClick={() => retryTurn(m)}
+                          >
+                            {t("retry")}
+                          </button>
+                        </p>
+                      )}
                     </div>
                   ) : (
                     <div className="group flex w-full gap-3">
@@ -731,7 +783,7 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
                 className="h-auto p-0 text-destructive"
                 onClick={() => {
                   const f = lastFailed.current;
-                  if (f) void send(f.text, f.images, f.audio);
+                  if (f) retryTurn({ id: f.id, role: "user", content: f.text, images: f.images, audio: f.audio });
                 }}
               >
                 {t("retry")}
