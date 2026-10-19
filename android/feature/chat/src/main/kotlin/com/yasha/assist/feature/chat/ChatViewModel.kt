@@ -29,6 +29,9 @@ data class UiTool(
     val server: String,
     val name: String,
     val status: String, // "running" | "done" | "error"
+    // Full call detail (openable tool card); null until the server provides it.
+    val args: String? = null,
+    val result: String? = null,
 )
 
 data class UiMessage(
@@ -263,7 +266,7 @@ class ChatViewModel(
                                 text = m.content,
                                 images = m.meta?.images.orEmpty(),
                                 tools = m.meta?.tools.orEmpty().map { t ->
-                                    UiTool(t.server, t.name, if (t.ok) "done" else "error")
+                                    UiTool(t.server, t.name, if (t.ok) "done" else "error", t.args, t.result)
                                 },
                                 audio = m.meta?.audio,
                                 audioTranscript = m.meta?.audioTranscript,
@@ -389,9 +392,9 @@ class ChatViewModel(
                     is ChatEvent.ToolProgress -> _state.update {
                         val msgs = it.messages.toMutableList()
                         val last = msgs.last()
-                        val tool = UiTool(ev.server, ev.name, ev.status)
+                        val tool = UiTool(ev.server, ev.name, ev.status, ev.args, ev.result)
                         val tools = last.tools.toMutableList()
-                        val idx = tools.indexOfLast { tl -> tl.server == ev.server && tl.name == ev.name }
+                        val idx = tools.indexOfLast { tl -> tl.status == "running" && tl.server == ev.server && tl.name == ev.name }
                         if (idx >= 0) tools[idx] = tool else tools.add(tool)
                         msgs[msgs.lastIndex] = last.copy(tools = tools)
                         it.copy(messages = msgs)

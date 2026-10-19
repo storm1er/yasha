@@ -15,7 +15,15 @@ import { useAudioConfig } from "@/lib/browser/use-audio-input";
 import type { ModelCapabilities } from "@/components/chat/model-picker";
 import { Button } from "@/components/ui/button";
 
-type ToolChip = { server: string; name: string; status: "running" | "done" | "error" };
+type ToolChip = {
+  server: string;
+  name: string;
+  status: "running" | "done" | "error";
+  /** JSON arguments string — present once the call is known (live or stored). */
+  args?: string;
+  /** Tool output (or error text) — present on terminal states. */
+  result?: string;
+};
 
 type ChatMessage = {
   id: string;
@@ -89,7 +97,13 @@ function mapMessage(m: ServerMessage): ChatMessage {
     audioTranscriptFailed,
     turnError,
     tools: tools?.length
-      ? tools.map((t) => ({ server: t.server, name: t.name, status: t.ok ? ("done" as const) : ("error" as const) }))
+      ? tools.map((t) => ({
+          server: t.server,
+          name: t.name,
+          status: t.ok ? ("done" as const) : ("error" as const),
+          args: typeof t.args === "string" ? t.args : undefined,
+          result: typeof t.result === "string" ? t.result : undefined,
+        }))
       : undefined,
   };
 }
@@ -107,6 +121,14 @@ function captionPending(m: ServerMessage): boolean {
   );
 }
 
+function formatToolJson(s: string): string {
+  try {
+    return JSON.stringify(JSON.parse(s), null, 2);
+  } catch {
+    return s;
+  }
+}
+
 function ToolChipRow({
   tools,
   label,
@@ -117,20 +139,73 @@ function ToolChipRow({
   return (
     <div data-testid="tool-chips" className="mb-2 flex flex-wrap gap-1.5">
       {tools.map((tc, i) => (
-        <span
-          key={`${tc.server}:${tc.name}:${i}`}
-          className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs text-muted-foreground"
-        >
-          {tc.status === "running" ? (
-            <Loader2 className="size-3 animate-spin" aria-hidden />
-          ) : tc.status === "done" ? (
-            <Check className="size-3" aria-hidden />
-          ) : (
-            <X className="size-3 text-destructive" aria-hidden />
-          )}
-          {label(tc.status, tc.name)}
-        </span>
+        <ToolChipView key={`${tc.server}:${tc.name}:${i}`} tool={tc} label={label(tc.status, tc.name)} />
       ))}
+    </div>
+  );
+}
+
+function ToolChipView({ tool, label }: { tool: ToolChip; label: string }) {
+  const t = useTranslations("chat");
+  const [open, setOpen] = useState(false);
+  const expandable = typeof tool.args === "string" || typeof tool.result === "string";
+  const icon =
+    tool.status === "running" ? (
+      <Loader2 className="size-3 animate-spin" aria-hidden />
+    ) : tool.status === "done" ? (
+      <Check className="size-3" aria-hidden />
+    ) : (
+      <X className="size-3 text-destructive" aria-hidden />
+    );
+  return (
+    <div className="max-w-full min-w-0">
+      <button
+        type="button"
+        aria-expanded={open}
+        disabled={!expandable}
+        onClick={() => expandable && setOpen((o) => !o)}
+        className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs text-muted-foreground ${
+          expandable ? "cursor-pointer transition-colors hover:bg-muted hover:text-foreground" : ""
+        }`}
+      >
+        {icon}
+        {label}
+        {expandable && (
+          <ChevronDown
+            className={`size-3 transition-transform ${open ? "rotate-180" : ""}`}
+            aria-hidden
+          />
+        )}
+      </button>
+      {open && expandable && (
+        <div className="mt-1 w-[min(420px,80vw)] min-w-0 rounded-xl border bg-muted/50 p-2 text-xs">
+          <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            {tool.server}
+          </div>
+          {typeof tool.args === "string" && tool.args !== "" && (
+            <div className="mb-1.5">
+              <div className="mb-0.5 font-medium text-muted-foreground">{t("toolArgs")}</div>
+              <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-background/60 p-1.5 font-mono text-[11px]">
+                {formatToolJson(tool.args)}
+              </pre>
+            </div>
+          )}
+          {typeof tool.result === "string" ? (
+            <div>
+              <div className="mb-0.5 font-medium text-muted-foreground">{t("toolResult")}</div>
+              <pre
+                className={`max-h-60 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-background/60 p-1.5 font-mono text-[11px] ${
+                  tool.status === "error" ? "text-destructive" : ""
+                }`}
+              >
+                {tool.result}
+              </pre>
+            </div>
+          ) : (
+            <div className="italic text-muted-foreground">{t("toolNoResult")}</div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

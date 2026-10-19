@@ -47,6 +47,17 @@ class ChatEventsTest {
     }
 
     @Test
+    fun `tool progress carries args and result`() {
+        assertEquals(
+            ChatEvent.ToolProgress("ketch", "search", "error", "{\"q\":\"x\"}", "tool error: boom"),
+            ChatEvents.parse(
+                "{\"tool\":{\"server\":\"ketch\",\"name\":\"search\",\"status\":\"error\"," +
+                    "\"args\":\"{\\\"q\\\":\\\"x\\\"}\",\"result\":\"tool error: boom\"}}",
+            ),
+        )
+    }
+
+    @Test
     fun `garbage and unrelated json map to null`() {
         assertNull(ChatEvents.parse("not json"))
         assertNull(ChatEvents.parse("{\"other\":1}"))

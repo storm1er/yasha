@@ -10,7 +10,14 @@ import { isNeedsAuthError, listTools } from "./client";
 
 const CATALOG_TTL_MS = 60_000;
 
-export type CatalogTool = { name: string; description: string };
+export type CatalogTool = {
+  name: string;
+  description: string;
+  /** Tool arguments as JSON Schema (MCP `inputSchema`, required by the spec —
+   *  the SDK's response parse enforces it). Advertised to the model as the
+   *  OpenAI function `parameters`; dropping it would force `{}`-only calls. */
+  inputSchema: Record<string, unknown>;
+};
 export type ServerHealth = {
   ok: boolean;
   toolCount: number;
@@ -100,7 +107,11 @@ export async function serverCatalog(
     const res = await listTools({ ...server, oauth });
     const tools = res.tools
       .filter((t) => !deny.has(t.name))
-      .map((t) => ({ name: t.name, description: t.description ?? "" }));
+      .map((t) => ({
+        name: t.name,
+        description: t.description ?? "",
+        inputSchema: t.inputSchema as Record<string, unknown>,
+      }));
     catalogCache.set(server.id, { at: now, tools });
     const h: ServerHealth = { ok: true, toolCount: tools.length, error: null, at: now };
     health.set(server.id, h);

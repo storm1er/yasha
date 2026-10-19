@@ -48,7 +48,14 @@ data class MessageMetaDto(
 )
 
 @Serializable
-data class ToolMetaDto(val server: String, val name: String, val ok: Boolean)
+data class ToolMetaDto(
+    val server: String,
+    val name: String,
+    val ok: Boolean,
+    // Full call detail so the tool card is openable/readable (mirrors the web).
+    val args: String? = null,
+    val result: String? = null,
+)
 
 // GET/POST /api/mcp/prefs (per-user tool-use opt-out; null = follow instance).
 @Serializable
@@ -74,7 +81,13 @@ data class TranscribeQueuedDto(val queued: Boolean = false)
 sealed interface ChatEvent {
     data class ThreadId(val id: String) : ChatEvent
     data class Delta(val text: String) : ChatEvent
-    data class ToolProgress(val server: String, val name: String, val status: String) : ChatEvent
+    data class ToolProgress(
+        val server: String,
+        val name: String,
+        val status: String,
+        val args: String? = null,
+        val result: String? = null,
+    ) : ChatEvent
     data class Done(val aborted: Boolean) : ChatEvent
     data class Failure(val code: String) : ChatEvent
 }

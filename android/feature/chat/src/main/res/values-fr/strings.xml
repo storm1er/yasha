@@ -221,6 +221,9 @@
     <string name="tool_running">en cours</string>
     <string name="tool_done">terminé</string>
     <string name="tool_error">erreur</string>
+    <string name="tool_args">Arguments</string>
+    <string name="tool_result">Résultat</string>
+    <string name="tool_no_result">En attente de la fin de l\'outil…</string>
     <string name="tools_title">Outils</string>
     <string name="tools_intro">Autorise l\'assistant à utiliser des outils externes (recherche web) pendant les conversations.</string>
     <string name="tools_follow">Utiliser les outils quand ils sont disponibles</string>

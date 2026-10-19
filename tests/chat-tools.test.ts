@@ -194,8 +194,8 @@ describe("chat tool loop", () => {
     const res = await postChat({});
     const events = await drain(res);
     expect(events.map((e) => Object.keys(e)[0])).toEqual(["threadId", "tool", "tool", "c", "done"]);
-    expect(events[1]).toEqual({ tool: { server: "ketch", name: "search", status: "running" } });
-    expect(events[2]).toEqual({ tool: { server: "ketch", name: "search", status: "done" } });
+    expect(events[1]).toEqual({ tool: { server: "ketch", name: "search", status: "running", args: '{"q":"x"}' } });
+    expect(events[2]).toEqual({ tool: { server: "ketch", name: "search", status: "done", args: '{"q":"x"}', result: "RESULT", ms: 5 } });
 
     const bodies = upstreamBodies(mock);
     expect(bodies[0].tools).toEqual(toolset.specs);
@@ -233,9 +233,13 @@ describe("chat tool loop", () => {
     });
     const events = await drain(await postChat({}));
     const toolEvents = events.filter((e) => e.tool).map((e) => e.tool as Record<string, unknown>);
-    expect(toolEvents).toContainEqual({ server: "ketch", name: "search", status: "running" });
-    expect(toolEvents.some((t) => t.status === "error" && t.name === "mcp__ghost__x")).toBe(true);
-    expect(toolEvents).toContainEqual({ server: "ketch", name: "search", status: "done" });
+    expect(toolEvents).toContainEqual({ server: "ketch", name: "search", status: "running", args: "{}" });
+    expect(
+      toolEvents.some(
+        (t) => t.status === "error" && t.name === "mcp__ghost__x" && String(t.result).includes("unknown tool"),
+      ),
+    ).toBe(true);
+    expect(toolEvents).toContainEqual({ server: "ketch", name: "search", status: "done", args: "{}", result: "RESULT", ms: 5 });
 
     const toolMsgs = upstreamBodies(mock)[1].messages.filter((m) => m.role === "tool");
     expect(toolMsgs).toHaveLength(2);

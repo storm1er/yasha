@@ -12,6 +12,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -56,6 +57,8 @@ object ChatEvents {
                         server = tool["server"]?.jsonPrimitive?.content.orEmpty(),
                         name = tool["name"]?.jsonPrimitive?.content.orEmpty(),
                         status = tool["status"]?.jsonPrimitive?.content.orEmpty(),
+                        args = tool["args"]?.jsonPrimitive?.contentOrNull,
+                        result = tool["result"]?.jsonPrimitive?.contentOrNull,
                     )
                 }
                 else -> null

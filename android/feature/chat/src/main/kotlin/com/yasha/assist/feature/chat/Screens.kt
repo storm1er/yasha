@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -88,6 +89,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
@@ -102,6 +104,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -506,6 +509,7 @@ private fun ToolChips(tools: List<UiTool>) {
     // One chip per row (issue #2): inline chips overflowed narrow screens.
     Column(verticalArrangement = Arrangement.spacedBy(6.dp), horizontalAlignment = Alignment.Start) {
         tools.forEach { tool ->
+            var expanded by remember(tool.server, tool.name) { mutableStateOf(false) }
             val label = when (tool.status) {
                 "running" -> runningLabel
                 "error" -> errorLabel
@@ -515,10 +519,12 @@ private fun ToolChips(tools: List<UiTool>) {
                 "error" -> MaterialTheme.colorScheme.error
                 else -> palette.disclaimer
             }
+            val expandable = !tool.args.isNullOrEmpty() || tool.result != null
             Row(
                 Modifier
                     .clip(RoundedCornerShape(999.dp))
                     .background(palette.userBubble.copy(alpha = 0.35f))
+                    .then(if (expandable) Modifier.clickable { expanded = !expanded } else Modifier)
                     .padding(horizontal = 10.dp, vertical = 5.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -533,6 +539,78 @@ private fun ToolChips(tools: List<UiTool>) {
                     style = MaterialTheme.typography.labelSmall,
                     color = tint,
                 )
+                if (expandable) {
+                    Icon(
+                        rememberVectorPainter(Icons.Default.ArrowDropDown),
+                        null,
+                        Modifier.size(16.dp).rotate(if (expanded) 180f else 0f),
+                        tint,
+                    )
+                }
+            }
+            if (expanded && expandable) ToolDetails(tool)
+        }
+    }
+}
+
+// Openable tool card (web parity): pretty-printed arguments + the tool's
+// result/error text, selectable for copy.
+private val prettyToolJson = kotlinx.serialization.json.Json { prettyPrint = true }
+
+private fun formatToolArgs(args: String): String = try {
+    prettyToolJson.parseToJsonElement(args).toString()
+} catch (_: Exception) {
+    args
+}
+
+@Composable
+private fun ToolDetails(tool: UiTool) {
+    val palette = LocalYashaPalette.current
+    SelectionContainer {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(palette.userBubble.copy(alpha = 0.22f))
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (!tool.args.isNullOrEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        stringResource(R.string.tool_args),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.disclaimer,
+                    )
+                    Text(
+                        formatToolArgs(tool.args),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                if (tool.result != null) {
+                    Text(
+                        stringResource(R.string.tool_result),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.disclaimer,
+                    )
+                    Text(
+                        tool.result,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = if (tool.status == "error") MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurface,
+                    )
+                } else {
+                    Text(
+                        stringResource(R.string.tool_no_result),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.disclaimer,
+                    )
+                }
             }
         }
     }

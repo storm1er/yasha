@@ -347,6 +347,12 @@ describe("bridge", () => {
     const echoNames = ts.specs.filter((s) => s.function.name === "mcp__a_b__echo");
     expect(echoNames).toHaveLength(1); // first server wins
     expect(ts.handles.get("mcp__a_b__echo")!.serverId).toBe("a_b");
+    // The MCP tool's real inputSchema is advertised as OpenAI `parameters`
+    // (an empty schema would force the model to call with `{}` only).
+    expect(echoNames[0]!.function.parameters).toMatchObject({
+      type: "object",
+      properties: { value: { type: "string" } },
+    });
   });
 
   it("skips unhealthy servers", async () => {
@@ -429,6 +435,8 @@ describe("bridge", () => {
     const ts = await buildToolset("u-test");
     const spec = ts.specs.find((s) => s.function.name === "mcp__fd__nodesc")!;
     expect(spec.function.description).toBe("fd: ");
+    // Schema-less MCP tool: the SDK still emits a bare object schema.
+    expect(spec.function.parameters).toMatchObject({ type: "object" });
     const out = await runToolCall({ serverId: "fd", tool: "empty", title: "t", userId: "u-test" }, "{}");
     expect(out.content).toContain("(empty)");
   });

@@ -19,7 +19,17 @@ export type ChatUpstreamMessage = {
   tool_call_id?: string;
 };
 
-export type ToolEvent = { server: string; name: string; status: "running" | "done" | "error" };
+/** Live SSE event. `args` rides along from the start and `result`/`ms` on the
+ *  terminal event so both clients can render an expandable tool card without
+ *  waiting for the thread re-sync (mirrors `ToolRoundRecord`). */
+export type ToolEvent = {
+  server: string;
+  name: string;
+  status: "running" | "done" | "error";
+  args?: string;
+  result?: string;
+  ms?: number;
+};
 export type ToolRoundRecord = {
   server: string;
   name: string;
@@ -84,16 +94,23 @@ export async function dispatchToolCalls(
       const handle = handles.get(call.function.name);
       if (!handle) {
         const content = `tool error: unknown tool ${call.function.name}`;
-        onEvent({ server: "?", name: call.function.name, status: "error" });
+        onEvent({ server: "?", name: call.function.name, status: "error", args: call.function.arguments, result: content, ms: 0 });
         return {
           call,
           record: { server: "?", name: call.function.name, ms: 0, ok: false, args: call.function.arguments, result: content } satisfies ToolRoundRecord,
           content,
         };
       }
-      onEvent({ server: handle.serverId, name: handle.tool, status: "running" });
+      onEvent({ server: handle.serverId, name: handle.tool, status: "running", args: call.function.arguments });
       const out = await runToolCall(handle, call.function.arguments, signal);
-      onEvent({ server: handle.serverId, name: handle.tool, status: out.ok ? "done" : "error" });
+      onEvent({
+        server: handle.serverId,
+        name: handle.tool,
+        status: out.ok ? "done" : "error",
+        args: call.function.arguments,
+        result: out.content,
+        ms: out.ms,
+      });
       return {
         call,
         record: { server: handle.serverId, name: handle.tool, ms: out.ms, ok: out.ok, args: call.function.arguments, result: out.content },

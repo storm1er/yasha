@@ -40,7 +40,9 @@ export async function buildToolset(userId: string): Promise<Toolset> {
         function: {
           name,
           description: `${entry.server.name}: ${tool.description}`.slice(0, 500),
-          parameters: { type: "object", properties: {} },
+          // The MCP tool's real JSON Schema — an empty `parameters` here is
+          // what made every model call send `{}` as arguments.
+          parameters: tool.inputSchema,
         },
       });
       handles.set(name, {
