@@ -42,6 +42,9 @@ data class MessageMetaDto(
     val audio: String? = null,
     val audioTranscript: String? = null,
     val audioTranscriptFailed: Boolean = false,
+    // Server-annotated error code when the assistant turn for this user
+    // message failed (e.g. "timeout") — renders the red retry notice.
+    val error: String? = null,
 )
 
 @Serializable

@@ -42,6 +42,9 @@ data class UiMessage(
     val audio: String? = null,
     val audioTranscript: String? = null,
     val audioTranscriptFailed: Boolean = false,
+    // Failure annotation persisted by the server (meta.error, e.g. "timeout")
+    // — renders the red "LLM timed out, retry?" notice under the message.
+    val turnError: String? = null,
 )
 
 data class ChatUiState(
@@ -265,6 +268,7 @@ class ChatViewModel(
                                 audio = m.meta?.audio,
                                 audioTranscript = m.meta?.audioTranscript,
                                 audioTranscriptFailed = m.meta?.audioTranscriptFailed == true,
+                                turnError = m.meta?.error,
                             )
                         },
                     )
@@ -397,9 +401,14 @@ class ChatViewModel(
                         failed = true
                         if (ev.code == "unauthorized") {
                             forceSignedOut()
+                        } else if (sawThreadId) {
+                            // Server kept the user message and annotated it with the
+                            // error code — re-open the thread so the failure notice
+                            // (and any partial answer) renders from server truth.
+                            finishGeneration(aborted = false, sawThreadId = true, refetch = true)
                         } else {
                             _state.update { it.copy(error = ev.code) }
-                            finishGeneration(aborted = false, sawThreadId = sawThreadId)
+                            finishGeneration(aborted = false, sawThreadId = false)
                         }
                     }
                 }
@@ -416,20 +425,23 @@ class ChatViewModel(
         if (s.threadId != null) openThread(s.threadId) // server persisted the partial turn
     }
 
-    private fun finishGeneration(aborted: Boolean, sawThreadId: Boolean) {
+    private fun finishGeneration(aborted: Boolean, sawThreadId: Boolean, refetch: Boolean = false) {
         streamJob = null
         _state.update {
             val msgs = it.messages.toMutableList()
             if (msgs.isNotEmpty() && msgs.last().streaming) {
-                if (msgs.last().text.isEmpty()) msgs.removeAt(msgs.lastIndex)
-                else msgs[msgs.lastIndex] = msgs.last().copy(streaming = false)
+                val last = msgs.removeAt(msgs.lastIndex)
+                // Keep a tool-only turn visible (its chips live in the DB too).
+                if (last.text.isNotEmpty() || last.tools.isNotEmpty()) {
+                    msgs.add(last.copy(streaming = false))
+                }
             }
             it.copy(busy = false, messages = msgs)
         }
         if (sawThreadId) {
             val id = _state.value.threadId
             if (id != null) {
-                if (aborted || _state.value.error != null) openThread(id)
+                if (aborted || refetch) openThread(id)
                 if (lastSendHadAudio) pollCaptions(id)
             }
             refresh()
@@ -437,6 +449,14 @@ class ChatViewModel(
             // request never started: drop the optimistic user message too
             _state.update { it.copy(messages = it.messages.filterNot { m -> m.role == "user" && m.id.startsWith("local-") }) }
         }
+    }
+
+    /** Retry a failed turn (red notice under the user message): drop the
+     * stale row locally, the server replaces it as the trailing failed turn. */
+    fun retryTurn(messageId: String) {
+        val m = _state.value.messages.find { it.id == messageId } ?: return
+        _state.update { it.copy(messages = it.messages.filterNot { x -> x.id == messageId }) }
+        sendInternal(m.text, m.images, m.audio)
     }
 
     private fun forceSignedOut() {

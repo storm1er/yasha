@@ -109,6 +109,7 @@ export async function POST(req: NextRequest) {
 
   const windowMessages = getSettingInt("chat.windowMessages");
   const firstTokenTimeoutMs = getSettingInt("chat.firstTokenTimeoutMs", 1000);
+  const heartbeatMs = getSettingInt("chat.sseHeartbeatMs", 1);
 
   let threadId: string;
   let model: string;
@@ -160,6 +161,21 @@ export async function POST(req: NextRequest) {
   const meta: Record<string, unknown> = {};
   if (images.length > 0) meta.images = images;
   if (audio) meta.audio = audio;
+
+  // Retry after a failed turn: if the previous turn died (its user message is
+  // the thread's last row, marked or not) and the client resends the identical
+  // turn, replace that row instead of stacking duplicates on top of it.
+  const lastRow = await db
+    .select({ id: messages.id, role: messages.role, content: messages.content, metaJson: messages.metaJson })
+    .from(messages)
+    .where(eq(messages.threadId, threadId))
+    .orderBy(sql`rowid DESC`)
+    .limit(1)
+    .get();
+  if (lastRow && lastRow.role === "user" && isSameTurn(lastRow, text, images, audio)) {
+    await db.delete(messages).where(sql`${messages.id} = ${lastRow.id}`).run();
+  }
+
   await db
     .insert(messages)
     .values({
@@ -291,11 +307,13 @@ export async function POST(req: NextRequest) {
     userId,
     threadId,
     userMsgId,
+    userMeta: meta,
     model,
     upstreamMessages: expandedMessages,
     toolset,
     newThread,
     firstTokenTimeoutMs,
+    heartbeatMs,
     release: () => releaseGeneration(userId),
   });
 
@@ -315,23 +333,57 @@ type StreamOpts = {
   userId: string;
   threadId: string;
   userMsgId: string;
+  /** Attachment meta of the persisted user message (re-serialized on failure
+   * marking so images/audio survive the `error` annotation). */
+  userMeta: Record<string, unknown>;
   model: string;
   upstreamMessages: ChatUpstreamMessage[];
   toolset: Toolset;
   newThread: boolean;
   firstTokenTimeoutMs: number;
+  heartbeatMs: number;
   release: () => void;
 };
+
+/** True when the thread's last row is the identical user turn the client is
+ * resending (same text + same attachments) — a retry of a failed turn. */
+function isSameTurn(
+  last: { content: string; metaJson: string | null },
+  text: string,
+  images: string[],
+  audio: string | null,
+): boolean {
+  if (last.content !== text) return false;
+  const meta = last.metaJson ? (JSON.parse(last.metaJson) as Record<string, unknown>) : {};
+  const storedImages = Array.isArray(meta.images) ? (meta.images as string[]) : [];
+  const storedAudio = typeof meta.audio === "string" ? meta.audio : null;
+  return (
+    images.length === storedImages.length &&
+    images.every((v, i) => v === storedImages[i]) &&
+    audio === storedAudio
+  );
+}
 
 function buildStream(opts: StreamOpts): ReadableStream<Uint8Array> {
   const enc = new TextEncoder();
   let assistantText = "";
   let usage: Record<string, unknown> | null = null;
   let firstTokenSeen = false;
+  let firstTokenTimedOut = false;
   let clientAborted = false;
   let persisted = false;
   const toolRecords: ToolRoundRecord[] = [];
   const toolsMeta = () => (toolRecords.length > 0 ? { tools: toolRecords } : {});
+
+  // Failed turns keep the user message and annotate its meta with the error
+  // code (timeout / upstream_* / empty_response) so both clients can render a
+  // persistent "LLM timed out, retry?" notice even after a reload.
+  const markFailed = (code: string) =>
+    db
+      .update(messages)
+      .set({ metaJson: JSON.stringify({ ...opts.userMeta, error: code }) })
+      .where(eq(messages.id, opts.userMsgId))
+      .run();
 
   const onClientAbort = () => {
     clientAborted = true;
@@ -386,20 +438,30 @@ function buildStream(opts: StreamOpts): ReadableStream<Uint8Array> {
     }
   };
 
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
+
   const cleanup = async () => {
     opts.req.signal.removeEventListener("abort", onClientAbort);
+    if (heartbeat) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+    }
     opts.release();
   };
 
   return new ReadableStream<Uint8Array>({
     async start(client) {
-      const send = (obj: Record<string, unknown>) => {
+      const sendRaw = (frame: string) => {
         try {
-          client.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
+          client.enqueue(enc.encode(frame));
         } catch {
           /* client gone */
         }
       };
+      const send = (obj: Record<string, unknown>) => sendRaw(`data: ${JSON.stringify(obj)}\n\n`);
+      // SSE comment keep-alive: long tool rounds / slow first tokens produce no
+      // bytes, and idle proxies drop the response. Clients skip comment lines.
+      heartbeat = setInterval(() => sendRaw(": ping\n\n"), opts.heartbeatMs);
       try {
         send({ threadId: opts.threadId });
       } catch {
@@ -411,10 +473,10 @@ function buildStream(opts: StreamOpts): ReadableStream<Uint8Array> {
 
       // First-token timeout applies to the first model round only (tool
       // round-trips may legitimately take longer).
-      let timeout: ReturnType<typeof setTimeout> | null = setTimeout(
-        () => opts.controller.abort(),
-        opts.firstTokenTimeoutMs,
-      );
+      let timeout: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+        firstTokenTimedOut = true;
+        opts.controller.abort();
+      }, opts.firstTokenTimeoutMs);
       const clearFirstTokenTimer = () => {
         if (timeout) {
           clearTimeout(timeout);
@@ -465,8 +527,9 @@ function buildStream(opts: StreamOpts): ReadableStream<Uint8Array> {
             await cleanup();
             return;
           }
-          await db.delete(messages).where(sql`${messages.id} = ${opts.userMsgId}`).run();
-          send({ error: "upstream_connect" });
+          const connectError = firstTokenTimedOut ? "timeout" : "upstream_connect";
+          await markFailed(connectError);
+          send({ error: connectError });
           client.close();
           await cleanup();
           return;
@@ -484,7 +547,7 @@ function buildStream(opts: StreamOpts): ReadableStream<Uint8Array> {
           }
           clearFirstTokenTimer();
           if (!clientAborted) {
-            await db.delete(messages).where(sql`${messages.id} = ${opts.userMsgId}`).run();
+            await markFailed(`upstream_status_${upstream.status}`);
           }
           send({ error: `upstream_status_${upstream.status}` });
           client.close();
@@ -553,11 +616,12 @@ function buildStream(opts: StreamOpts): ReadableStream<Uint8Array> {
             await persist({ model: opts.model, aborted: true, usage, ...toolsMeta() });
             send({ error: "upstream_stream" });
           } else {
-            await db.delete(messages).where(sql`${messages.id} = ${opts.userMsgId}`).run();
-            send({ error: "upstream_stream" });
+            const streamError = firstTokenTimedOut ? "timeout" : "upstream_stream";
+            await markFailed(streamError);
+            send({ error: streamError });
           }
         } else if (assistantText.length === 0) {
-          await db.delete(messages).where(sql`${messages.id} = ${opts.userMsgId}`).run();
+          await markFailed("empty_response");
           send({ error: "empty_response" });
         } else {
           await persist({ model: opts.model, usage, ...toolsMeta() });

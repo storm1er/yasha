@@ -57,6 +57,7 @@
     <string name="error_network">Can\'t reach the server. Check the URL and your connection.</string>
     <string name="error_upstream">The model failed to answer. Try again.</string>
     <string name="error_generic">Something went wrong.</string>
+    <string name="turn_timeout">LLM timed out. Retry?</string>
     <string name="settings_title">Settings</string>
     <string name="tab_general">General</string>
     <string name="language_title">Language</string>

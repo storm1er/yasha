@@ -38,6 +38,7 @@ export const EVENT_SETTING_KEY: Record<QueueJobType, string | null> = {
 export const DEFAULTS = {
   "chat.windowMessages": 20,
   "chat.firstTokenTimeoutMs": 600000,
+  "chat.sseHeartbeatMs": 15000,
   "chat.maxImagesPerMessage": 4,
   "chat.maxWindowImages": 8,
   "chat.maxUploadBytes": 20971520,
