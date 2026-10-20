@@ -5,6 +5,14 @@ generated automatically by CI from Conventional Commits landing on `main`
 ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)).
 
+## [0.2.1] - 2026-10-20
+
+### Bug Fixes
+- **docker:** Retry bounded loops around gradle/npm-ci downloads (637c7b0)
+
+### Refactoring
+- **compose:** Single compose.yml + fully-commented opt-in override example (e872015)
+
 ## [0.2.0] - 2026-10-19
 
 ### Features
