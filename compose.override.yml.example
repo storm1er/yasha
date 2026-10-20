@@ -1,10 +1,40 @@
-# Basic override for development: open lemonade ports and use npm run dev for app
+# ── Yasha compose override (opt-ins) ─────────────────────────────────────────
+# cp compose.override.yml.example compose.override.yml   # gitignored, host-specific
+#
+# Everything below is commented out: uncomment ONLY the lines you need.
+# compose.yml ships with yasha only (no published port, bundled Lemonade and
+# Caddy at replicas: 0). `docker compose config` validates the result;
+# `docker compose up -d` applies it.
+#
+# Common recipes:
+#   • Home server with HTTPS      → Caddy option C (+ domains in .env)
+#   • HTTP only, port 80          → Caddy option A
+#   • Behind your own TLS proxy   → Yasha → open port (proxy → 127.0.0.1:3000)
+#   • Development from source     → Lemonade → replicas: 1 (+ ports) and
+#                                        Yasha → dev mode (+ open port)
 
 services:
+  # ═══════════════════ LEMONADE (bundled LLM backend) ════════════════════════
   lemonade:
-    ports:
-      - "13305:13305"
-    # # For AMD GPU (ROCm) on Linux only, also add these in compose.override.yml:
+    # ── Enable the bundled backend ───────────────────────────────────────────
+    # Keep LEMONADE_BASE_URL=http://lemonade:13305 in .env (the default).
+    # Using your own Lemonade instead? Leave this at 0 and point
+    # LEMONADE_BASE_URL in .env at it — then you may also want
+    # ADMIN_ALLOW_MUTATIONS=false in .env.
+    # deploy:
+    #   replicas: 1
+    #
+    #   ── GPU acceleration (optional, uncomment inside the `deploy:` block
+    #      above; see https://lemonade-server.ai/docs/guide/install/docker/) ──
+    #   NVIDIA (requires NVIDIA driver + Container Toolkit on the host):
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+    #   AMD / ROCm (Linux only — this one is NOT inside `deploy:`):
     # devices:
     #   - /dev/kfd:/dev/kfd
     #   - /dev/dri:/dev/dri
@@ -12,17 +42,51 @@ services:
     #   - video
     #   - render
 
-  web:
-    build:
-      target: dev
-    working_dir: /app
-    command: npm run dev
-    volumes:
-      - ./:/app
-      - yasha_node_modules:/app/node_modules
-    # ports come from compose.yml (${PORT:-3000}:3000) — dev stays on :3000
-    env_file: .env
-    init: true
+    # ── Publish the backend port (dev convenience / direct LAN access) ───────
+    # The backend has NO authentication: LAN-only, never a public interface.
+    # ports:
+    #   - "13305:13305"
 
-volumes:
-  yasha_node_modules:
+  # ═══════════════════ CADDY (optional web front, no TLS by default) ═════════
+  caddy:
+    # ── Enable Caddy (required for any option below) ─────────────────────────
+    # deploy:
+    #   replicas: 1
+
+    # Then uncomment the ports you need (Caddy reaches yasha/lemonade over the
+    # compose network — you do NOT need to publish their ports too):
+    # ports:
+    #   - "80:80"          # A) Yasha on http://<host> — no TLS. Caddy serves
+    #                      #    ":80" by default (CADDY_ADDRESS in .env stays unset).
+    #   - "443:443"        # C) TLS: add this alongside "80:80", set
+    #                      #    CADDY_ADDRESS=https://<your-domain> +
+    #                      #    BETTER_AUTH_URL/_TRUSTED_ORIGINS in .env →
+    #                      #    automatic Let's Encrypt HTTPS on 80 + 443.
+    #   - "13305:13305"    # B) Lemonade plain HTTP on :13305 — also enable the
+    #                      #    backend above and set CADDY_LEMONADE_ADDRESS=":13305"
+    #                      #    (or llm.<your-domain> for C) in .env.
+
+  # ═══════════════════ YASHA (the app — always running) ══════════════════════
+  yasha:
+    # ── Open ports (no Caddy: point your own TLS proxy at this port with
+    #    Host + X-Forwarded-Proto: https) ──────────────────────────────────────
+    # PORT in .env only feeds env/docs; the mapping is below —
+    # use 127.0.0.1: binding unless the proxy runs on another host:
+    # ports:
+    #   - "127.0.0.1:${PORT:-3000}:3000"
+
+    # ── Dev mode (contributors: run the working tree with hot reload) ─────────
+    # Combine with the ports block above to reach it, e.g.
+    #   ports: ["3000:3000"] → http://localhost:3000
+    # build:
+    #   target: dev
+    # command: npm run dev
+    # working_dir: /app
+    # init: true
+    # volumes:
+    #   - ./:/app
+    #   - yasha_node_modules:/app/node_modules
+
+# Dev mode also needs this named volume — uncomment together with the block above:
+# volumes:
+#   yasha_node_modules:

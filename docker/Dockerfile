@@ -42,7 +42,9 @@ ENV ANDROID_HOME=/opt/android-sdk-linux \
 # ── Gradle cache pre-warm (bakes deps so per-user builds skip cold downloads) ──
 FROM toolchain AS apk-prewarm
 COPY android/ /opt/yasha-android/
-RUN gradle --no-daemon -p /opt/yasha-android assembleDebug \
+# Retries: a flaky link (mid-handshake resets) must not kill the whole layer —
+# each attempt resumes from Gradle's cache, so bounded retries eventually converge.
+RUN ok=0; for i in 1 2 3 4 5 6 7 8; do gradle --no-daemon -p /opt/yasha-android assembleDebug && { ok=1; break; }; sleep 5; done; [ "$ok" = 1 ] \
     && find /opt/yasha-android \( -type d \( -name build -o -name .gradle \) \) -prune -exec rm -rf {} + \
     && chmod -R a+rwX /opt/gradle-home
 
@@ -58,7 +60,7 @@ RUN apt-get update \
 COPY --from=apk-prewarm /opt/gradle-home /opt/gradle-home
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN ok=0; for i in 1 2 3 4 5; do npm ci && { ok=1; break; }; sleep 5; done; [ "$ok" = 1 ]
 COPY . .
 ARG ALLOWED_DEV_ORIGINS=
 # NOTE: no NODE_ENV here — `next dev` forces development itself, and baking
@@ -84,7 +86,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN ok=0; for i in 1 2 3 4 5; do npm ci && { ok=1; break; }; sleep 5; done; [ "$ok" = 1 ]
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1 \
     LEMONADE_BASE_URL=http://localhost:13305 \

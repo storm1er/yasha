@@ -22,13 +22,15 @@ live **only** in `AGENTS.local.md`, which is gitignored and never committed. If 
 If `.env` / `compose.override.yml` don't exist yet, set them up **with the developer** and record
 the resulting topology in `AGENTS.local.md`:
 
-1. `cp .env.example .env` and `cp compose.override.yml.example compose.override.yml`, then ask
-   the developer which backend topology they use:
-   - **Bundled Lemonade** (default): leave compose as-is; `LEMONADE_BASE_URL=http://lemonade:13305`;
-     publish `13305` in the override only if they want direct access from the host.
-   - **External Lemonade / proxy of their own**: set `LEMONADE_BASE_URL` to their URL in `.env`
-     **and** disable the bundled service in `compose.override.yml` (`services.lemonade.deploy.replicas: 0`)
-     — otherwise the container starts unused and confuses QA.
+1. `cp .env.example .env` and `cp compose.override.yml.example compose.override.yml` (compose.yml
+   is the single stack file: yasha always on; lemonade & caddy at `replicas: 0`, no published
+   ports — everything else is an opt-in block of the override), then ask the developer which
+   backend topology they use:
+   - **Bundled Lemonade**: uncomment `services.lemonade.deploy.replicas: 1` in the override;
+     `LEMONADE_BASE_URL=http://lemonade:13305` (.env default); publish `13305` only if they want
+     direct access from the host.
+   - **External Lemonade / proxy of their own**: set `LEMONADE_BASE_URL` to their URL in `.env`;
+     the bundled service stays at its default `replicas: 0` — never enable it.
 2. Required in `.env`: `BETTER_AUTH_SECRET` (never a placeholder), `BETTER_AUTH_URL` +
    `BETTER_AUTH_TRUSTED_ORIGINS` matching the URL the developer will actually browse, and
    `BOOTSTRAP_ADMIN_*` for first boot (the only automatic way to get the first admin — plain
@@ -57,7 +59,7 @@ Lemonade server.
    Installing/uninstalling **this project's own APK** (sideload, debug-signed) is allowed for app QA —
    nothing else: no settings changes, no other installs, no data wipes. Close tabs when done.
 7. Test users: prefix `t<phase>_`. DB at `./data/yasha.db`; wipe only when your task says "fresh start".
-8. **Definition of done**: `docker|podman compose run --rm web sh -c 'npx tsc --noEmit && npm run lint && npx vitest run --coverage && npm run build'` green — the vitest suite must pass with **100% coverage** of the server scope
+8. **Definition of done**: `docker|podman compose run --rm yasha sh -c 'npx tsc --noEmit && npm run lint && npx vitest run --coverage && npm run build'` green — the vitest suite must pass with **100% coverage** of the server scope
    (`app/**/route.ts`, `lib/**/*.ts`, `instrumentation.ts`; thresholds are enforced in `vitest.config.mts`). Any new/changed server route or lib file ships with tests at 100%.
    Do not chase unreachable branches with pragmas: if a branch is provably dead, delete or simplify the code (see the tests workflow).
    Also: happy path verified interactively (Playwright desktop; adb+MCP when mobile is in scope).
@@ -70,15 +72,15 @@ stack setup above (ask the developer about their Lemonade topology — bundled v
 agent's network, in `AGENTS.local.md`).
 
 ### db migrations
-Run drizzle-kit inside the dev-stage `web` image (requires `compose.override.yml` — see bring-up):
+Run drizzle-kit inside the dev-stage `yasha` image (requires `compose.override.yml` — see bring-up):
 - generate SQL migrations from the drizzle schema:
-  `docker|podman compose -f compose.yml -f compose.override.yml run --rm web npx drizzle-kit generate`
+  `docker|podman compose run --rm yasha npx drizzle-kit generate`
 - push schema straight to `./data/yasha.db` (dev shortcut, no migration files):
-  `docker|podman compose -f compose.yml -f compose.override.yml run --rm web npx drizzle-kit push`
+  `docker|podman compose run --rm yasha npx drizzle-kit push`
 
 ### tests (vitest) — harness & rules
-The suite lives in `tests/` and runs **inside the web image** (host has no node):
-- all: `docker|podman compose run --rm web sh -c 'npx vitest run'` (add `--coverage` for the DoD gate)
+The suite lives in `tests/` and runs **inside the yasha image** (host has no node):
+- all: `docker|podman compose run --rm yasha sh -c 'npx vitest run'` (add `--coverage` for the DoD gate)
 - one file: `... 'npx vitest run tests/<file>.test.ts'`
 - **mid-phase coverage** (full run fails thresholds by design until the phase is done): scope it
   `... 'npx vitest run tests/<file>.test.ts --coverage --coverage.include="app/api/<area>/**/route.ts" --coverage.include="lib/<file>.ts" --coverage.reporter=json'`

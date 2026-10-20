@@ -23,7 +23,7 @@ Two layers configure Yasha:
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `LEMONADE_BASE_URL` | `http://lemonade:13305` | Base URL of the Lemonade server. Bundled container keeps it on the internal network; point elsewhere for an external instance (then scale the bundled one to `replicas: 0` in your override). |
+| `LEMONADE_BASE_URL` | `http://lemonade:13305` | Base URL of the Lemonade server. The bundled container ships at `replicas: 0` (enable it in `compose.override.yml`); point this at your own instance otherwise. |
 | `LEMONADE_API_KEY` | empty | Optional Bearer token if your Lemonade requires one. |
 | `ADMIN_ALLOW_MUTATIONS` | `true` | Gate for admin-only **mutating** Lemonade calls (pull/load/unload/delete) in `/api/admin/actions`. Set `false` for shared/remote backends — routes answer `503 mutations_disabled`. |
 
@@ -37,24 +37,29 @@ Two layers configure Yasha:
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `PORT` | `3000` | Host port published by compose (container always listens on 3000). Your TLS proxy points here. |
-| `DATABASE_PATH` | `/data/yasha.db` | SQLite file location (inside the `/data` volume). |
+| `PORT` | `3000` | Nominal host port of the app (container always listens on 3000). compose.yml publishes **nothing** by default; with the "open ports" override block it is the host side of the mapping. Your TLS proxy points there. Unneeded when Caddy fronts the app. |
+| `DATABASE_PATH` | `/data/yasha.db` | SQLite file location (inside the `./data` bind-mount). |
 | `TZ` | `UTC` | Container timezone (affects cron/scheduler jobs). |
 | `NEXT_TELEMETRY_DISABLED` | — | Set to `1` to silence Next.js telemetry prompts. |
 | `ALLOWED_DEV_ORIGINS` | empty | **Dev only**: extra hostnames allowed to load `/_next` assets (LAN-IP development, HMR). Leave empty in production. |
 | `APP_NAME` | `Yasha` | Display-name override (rarely needed). |
 
-### TLS front (optional bundled Caddy)
+### Web front (optional bundled Caddy)
+
+The `caddy` service ships at `replicas: 0` with no published port; enable it by
+uncommenting a block in `compose.override.yml` (options A/B/C). Its Caddyfile is
+inlined in `compose.yml` (env placeholders expanded by Caddy at boot).
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `CADDY_ADDRESS` | `:80` | Only used with the Caddy overlay (`compose.prod.caddy.yml` for the pre-built stack, `compose.caddy.yml` for source runs). Set to a domain for automatic Let's Encrypt HTTPS (ports 80+443 must reach the container). |
+| `CADDY_ADDRESS` | `:80` | Yasha site address. Plain `:80` = HTTP; `your.domain.tld` = automatic Let's Encrypt HTTPS on 80+443 (also set `BETTER_AUTH_URL`/`_TRUSTED_ORIGINS` accordingly). |
+| `CADDY_LEMONADE_ADDRESS` | `127.0.0.1:13305` | Lemonade site address. The loopback default is unreachable from outside the container (inactive). `:13305` = plain HTTP front (publish the port in the override, LAN-only); `llm.your.domain.tld` = automatic HTTPS. |
 
-### Image selection (pre-built stack only)
+### Image selection
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `YASHA_IMAGE` | `ghcr.io/storm1er/yasha:latest` | Image used by `compose.prod.yml`. CI publishes `:latest` and a `vX.Y.Z` version tag on every merge to main (semver from Conventional Commits). Unused by the source-based `compose.yml`, which builds locally. |
+| `YASHA_IMAGE` | `yasha:local` (built from source) | Set to the pre-built GHCR image (e.g. `ghcr.io/storm1er/yasha:latest`) to run without building; CI publishes `:latest` and a `vX.Y.Z` version tag on every merge to main (semver from Conventional Commits). |
 
 ### Rate limiting (coarse in-app backstop)
 
