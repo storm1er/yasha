@@ -1,8 +1,56 @@
+# ── Yasha — single production compose file ───────────────────────────────────
+# Three services, but only `yasha` runs by default:
+#
+#   * yasha    — the app (always runs; image is built from this repo, or pulled
+#                from GHCR when YASHA_IMAGE is set in .env — see below)
+#   * lemonade — bundled LLM backend, OFF by default (replicas: 0)
+#   * caddy    — optional reverse proxy, OFF by default (replicas: 0)
+#
+# Nothing publishes a host port by default: the services talk to each other on
+# the compose network. Pick what you need in compose.override.yml (start from
+# compose.override.yml.example — every option is a commented block to enable),
+# and .env (start from .env.example). Then:
+#
+#   docker compose up -d
+#
+# Self-hosters (no source checkout) need three files: this one,
+# .env.example and compose.override.yml.example. Set YASHA_IMAGE in .env to the
+# pre-built GHCR image and `docker compose pull` once, or just run the whole
+# stack from a source checkout (`docker compose up` builds it).
+#
+# All state lives in ./data (SQLite DB — attachments included —, import spool,
+# APK artifacts). Back that directory up; that's it.
+
 name: yasha
 
 services:
+  yasha:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: runtime
+    # Built locally from source by default (dev/contributors). Self-hosters:
+    # set YASHA_IMAGE in .env (e.g. ghcr.io/storm1er/yasha:latest) and
+    # `docker compose pull` first — CI publishes :latest and vX.Y.Z tags.
+    image: ${YASHA_IMAGE:-yasha:local}
+    env_file: .env
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # No `ports:` on purpose — expose via Caddy below or open a port in
+    # compose.override.yml. No depends_on: with an external Lemonade the bundled
+    # service stays at replicas: 0 and the app retries backend health on its own.
+
+  # Bundled LLM backend — OFF by default. Enable + GPU setup (NVIDIA/AMD) and
+  # LEMONADE_BASE_URL in .env: see compose.override.yml.example. It stays on
+  # the internal network (never published) unless you opt in to exposing it.
   lemonade:
     image: ghcr.io/lemonade-sdk/lemonade-server:latest
+    deploy:
+      # 0 = disabled; uncomment `replicas: 1` in compose.override.yml to enable
+      replicas: 0
     volumes:
       # Persist downloaded models
       - lemonade-cache:/opt/lemonade/.cache/huggingface
@@ -13,37 +61,62 @@ services:
       # Persist config.json, jobs.json, recipe_options.json, etc.
       - lemonade-config:/opt/lemonade/.config/lemonade
     restart: unless-stopped
-    # # For AMD GPU (ROCm) on Linux only, add these in compose.override.yml:
-    # devices:
-    #   - /dev/kfd:/dev/kfd
-    #   - /dev/dri:/dev/dri
-    # group_add:
-    #   - video
-    #   - render
-    # # Use this in compose.override.yml to disable embeded lemonade and use your own
-    # # If you do so, make sure to update LEMONADE_BASE_URL in .env to match your setup
-    # deploy:
-    #   replicas: 0
 
-  web:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
-      target: runtime
-    image: yasha:local
-    # Published host port (your TLS proxy should point at this, e.g. PORT=3333;
-    # add compose.caddy.yml for the bundled Caddy option instead).
-    ports:
-      - "${PORT:-3000}:3000"
-    env_file: .env
+  # Optional web front (reverse proxy) — OFF by default, no TLS by default.
+  # Enabling options (plain HTTP on 80, Lemonade front, TLS/Let's Encrypt with
+  # domains from .env) are commented blocks in compose.override.yml.example.
+  # The Caddyfile is inlined below so the download-with-3-files install works;
+  # $$ is compose's escape for a literal $ (Caddy expands the env placeholders
+  # at boot). The Lemonade site defaults to loopback INSIDE the Caddy container
+  # — unreachable until you publish a port for it.
+  caddy:
+    image: caddy:2-alpine
+    deploy:
+      # 0 = disabled; see compose.override.yml.example to enable
+      replicas: 0
+    environment:
+      CADDY_ADDRESS: ${CADDY_ADDRESS:-:80}
+      CADDY_LEMONADE_ADDRESS: ${CADDY_LEMONADE_ADDRESS:-127.0.0.1:13305}
     volumes:
-      - ./data:/data
+      - caddy_data:/data
+      - caddy_config:/config
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
+    depends_on:
+      - yasha
     restart: unless-stopped
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+
+configs:
+  caddyfile:
+    content: |
+      {
+      	# SSE-friendly defaults are set per-route (flush_interval -1)
+      }
+
+      # Yasha front (address from CADDY_ADDRESS: ":80" = plain HTTP,
+      # "yasha.example.com" = automatic Let's Encrypt HTTPS)
+      {$$CADDY_ADDRESS::80} {
+      	encode zstd gzip
+      	reverse_proxy yasha:3000 {
+      		flush_interval -1
+      	}
+      }
+
+      # Optional Lemonade front (address from CADDY_LEMONADE_ADDRESS:
+      # ":13305" = plain HTTP on that port, "llm.example.com" = automatic HTTPS;
+      # the loopback default is unreachable from outside the container)
+      {$$CADDY_LEMONADE_ADDRESS:127.0.0.1:13305} {
+      	encode zstd gzip
+      	reverse_proxy lemonade:13305 {
+      		flush_interval -1
+      	}
+      }
 
 volumes:
   lemonade-cache:
   lemonade-llama:
   lemonade-data:
   lemonade-config:
+  caddy_data:
+  caddy_config:

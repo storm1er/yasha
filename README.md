@@ -63,42 +63,54 @@ Self-hosted · Private · Multi-language (en/fr) · Web + Android
   </tr>
 </table>
 
-## Quickstart (self-hosted — no source checkout needed)
+## Quickstart
 
-You need Docker and two files: `compose.prod.yml` (the whole stack) and a `.env`.
+You need Docker (or podman) and three files: `compose.yml` (the whole stack),
+`compose.override.yml.example` and `.env.example` (the Caddyfile is inlined in
+`compose.yml`).
 
 ```bash
 mkdir yasha && cd yasha
-curl -fLO https://raw.githubusercontent.com/storm1er/yasha/HEAD/compose.prod.yml
+curl -fLO https://raw.githubusercontent.com/storm1er/yasha/HEAD/compose.yml
+curl -fLO https://raw.githubusercontent.com/storm1er/yasha/HEAD/compose.override.yml.example
 curl -fLO https://raw.githubusercontent.com/storm1er/yasha/HEAD/.env.example
-cp .env.example .env   # edit: YASHA_IMAGE, BETTER_AUTH_SECRET (openssl rand -hex 32),
-                       # BETTER_AUTH_URL, BETTER_AUTH_TRUSTED_ORIGINS, BOOTSTRAP_ADMIN_*
-docker compose -f compose.prod.yml up -d
+cp .env.example .env                 # edit: BETTER_AUTH_SECRET (openssl rand -hex 32),
+                                     # BETTER_AUTH_URL, BETTER_AUTH_TRUSTED_ORIGINS,
+                                     # BOOTSTRAP_ADMIN_*, YASHA_IMAGE (pre-built image)
+cp compose.override.yml.example compose.override.yml
+                                     # uncomment what you need (see recipes at the top)
+docker compose pull                  # pre-built image (skip if building from source)
+docker compose up -d
 ```
 
-Then browse `http://<host>:${PORT:-3000}` (behind your TLS proxy) — or let the **bundled
-Caddy** terminate TLS for you on 80/443 with automatic Let's Encrypt:
+`compose.yml` runs the **yasha** app only by default — the bundled **lemonade**
+backend and the **caddy** front both start at `replicas: 0` and no port is
+published. **<ins>Enable what you need by uncommenting lines in `compose.override.yml`:</ins>**
 
-```bash
-curl -fLO https://raw.githubusercontent.com/storm1er/yasha/HEAD/compose.prod.caddy.yml
-CADDY_ADDRESS=your.domain.tld docker compose -f compose.prod.yml -f compose.prod.caddy.yml up -d
-```
+- **Plain HTTP on :80** → Caddy option A (also `:13305` for the backend with B).
+- **HTTPS with your domain** → Caddy option C (automatic Let's Encrypt on
+  80/443, domain in `.env`) — browse `https://your.domain.tld`.
+- **Your own TLS proxy** → Yasha "open ports" block; the proxy forwards
+  `https://<public-host>` → `http://127.0.0.1:3000` with `Host` +
+  `X-Forwarded-Proto: https`.
+- **Bundled LLM backend** → Lemonade block (`replicas: 1`, optional NVIDIA/AMD
+  GPU lines). Prefer your own? Point `LEMONADE_BASE_URL` at it in `.env`.
 
-The stack is two services: `web` (pre-built image from GHCR, published on loopback only) and
-`lemonade` (the LLM backend, never published). All state lives in a single `yasha_data` volume —
-SQLite DB (chat history & attachments included), import spool, APK artifacts — that is also your
-whole backup. Prefer your own Lemonade? Set `LEMONADE_BASE_URL` in `.env` and scale the bundled
-one to `replicas: 0`. Upgrades, restores, and the proxy checklist:
-[docs/admin-guide.md](docs/admin-guide.md).
+The stack keeps all state in `./data` (SQLite DB — chat history & attachments
+included —, import spool, APK artifacts) — that directory is your whole backup.
+Caddy keeps its certificates in named volumes (`caddy_data`). More info about
+upgrades, restores, and the proxy checklist: [docs/admin-guide.md](docs/admin-guide.md).
 
-Voice input: tap the mic in chat and talk — the recording is sent natively to the
+Voice input: tap the mic in chat and talk : the recording is sent natively to the
 audio-capable fast model (Gemma 4 E2B/E4B/12B; see Settings → Lemonade) and gets a
 readable caption from a background job. No transcription service to deploy.
 
-### Single `docker run` (minimal)
+No Text-to-Speech _yet_.
 
-If you run your own proxy/backend, one container suffices (the image also embeds the Android
-toolchain for per-user APK builds, so expect ~2–4 GB):
+### Single `docker run` (not recommended)
+
+If you run your own proxy/backend, one container suffices (the image also embeds
+the Android toolchain for per-user APK builds, so expect ~1–2 GB):
 
 ```bash
 docker run -d --name yasha \
@@ -106,19 +118,19 @@ docker run -d --name yasha \
   -v yasha-data:/data \
   --add-host=host.docker.internal:host-gateway \
   -e LEMONADE_BASE_URL=http://host.docker.internal:13305 \
-  -e BETTER_AUTH_SECRET=*** rand -hex 32) \
+  -e BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
   -e BETTER_AUTH_URL=https://<public-host> \
   -e BETTER_AUTH_TRUSTED_ORIGINS=https://<public-host> \
-  -e BOOTSTRAP_ADMIN_USERNAME=… -e BOOTSTRAP_ADMIN_PASSWORD=*** \
+  -e BOOTSTRAP_ADMIN_USERNAME=admin -e BOOTSTRAP_ADMIN_PASSWORD=password \
   ghcr.io/storm1er/yasha:latest
 ```
 
 On first boot an empty `/data` volume is automatically migrated and the bootstrap admin is
-seeded. Your TLS proxy forwards `https://<public-host>` → `http://127.0.0.1:3333` with `Host` +
-`X-Forwarded-Proto: https`.
+seeded. Your TLS proxy forwards `https://<public-host>` → `http://127.0.0.1:3333`
+with `Host` + `X-Forwarded-Proto: https`.
 
-Running from source instead? That's the contributor path — see [Development](#development) and
-[CONTRIBUTING.md](CONTRIBUTING.md).
+Running from source instead? That's the contributor path — see [Development](#development) 
+and [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Tools (MCP)
 
@@ -150,33 +162,36 @@ Yasha can equip the assistant with external tools over the Model Context Protoco
 | [Contributing](CONTRIBUTING.md) | Dev setup (containers only), tests, definition of done |
 | [AGENTS.md](AGENTS.md) | Guardrails & harness for AI coding agents |
 
-## Development (contributors — run from source)
+## Development
 
-Contributing? Run the app from the working tree with hot reload (`web` built with the `dev`
-target, Lemonade port published for direct access):
+Contributing? Run the app from the working tree with hot reload. The stack ships
+`lemonade`/`caddy` at `replicas: 0` with no published ports, so the dev override
+enables what you need (its header lists the recipes : uncomment the Lemonade
+`replicas: 1` + ports to reach the backend on :13305, and Yasha dev mode +
+ports to reach the app):
 
 ```bash
-cp .env.example .env # Then edit as needed
-cp compose.override.yml.example compose.override.yml # Eventually edit as needed
-docker compose up # Then navigate to http://localhost or http://localhost:3000 or http://localhost:13305
+cp .env.example .env                                    # then edit as needed
+cp compose.override.yml.example compose.override.yml    # then edit as needed
+docker compose up     # yasha on http://localhost:3000 (+ lemonade on :13305)
 ```
 
 Check quality gates (all must pass, see [CONTRIBUTING.md](CONTRIBUTING.md)):
 
 ```bash
-docker compose run --rm web sh -c 'npx tsc --noEmit && npm run lint && npx vitest run --coverage && npm run build'
+docker compose run --rm yasha sh -c 'npx tsc --noEmit && npm run lint && npx vitest run --coverage && npm run build'
 ```
 
 ### Database migrations
 
-One-off tools run inside the dev-stage `web` image (deps + source come from the override):
+One-off tools run inside the dev-stage `yasha` image (deps + source come from the override):
 
 ```bash
 # generate SQL migrations from the drizzle/ schema
-docker compose -f compose.yml -f compose.override.yml run --rm web npx drizzle-kit generate
+docker compose run --rm yasha npx drizzle-kit generate
 
 # push the schema straight to ./data/yasha.db (dev shortcut, no migration files)
-docker compose -f compose.yml -f compose.override.yml run --rm web npx drizzle-kit push
+docker compose run --rm yasha npx drizzle-kit push
 ```
 
 ## Contributing
