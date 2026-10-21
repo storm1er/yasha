@@ -4,6 +4,7 @@ import * as chatRoute from "@/app/api/chat/route";
 import { buildToolset, runToolCall, type ToolHandle } from "@/lib/mcp/bridge";
 import {
   createToolCallAccumulator,
+  createTurnParts,
   dispatchToolCalls,
   expandToolRounds,
   parseToolRounds,
@@ -42,6 +43,26 @@ const emptyToolset = { specs: [], handles: new Map<string, ToolHandle>() };
 
 function sseToolCalls(calls: { id?: string; name: string; args?: string }[]): Response {
   let body = "";
+  calls.forEach((c, i) => {
+    const first = { index: i, ...(c.id ? { id: c.id } : {}), function: { name: c.name, arguments: "" } };
+    body += `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [first] } }] })}\n\n`;
+    if (c.args) {
+      body += `data: ${JSON.stringify({
+        choices: [{ delta: { tool_calls: [{ index: i, function: { arguments: c.args } }] } }] },
+      )}\n\n`;
+    }
+  });
+  body += "data: [DONE]\n\n";
+  return new Response(body, { headers: { "content-type": "text/event-stream" } });
+}
+
+/** One completion carrying assistant text AND tool calls (multi-round turns). */
+function sseTextAndToolCalls(
+  text: string,
+  calls: { id?: string; name: string; args?: string }[],
+): Response {
+  let body = "";
+  if (text) body += `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`;
   calls.forEach((c, i) => {
     const first = { index: i, ...(c.id ? { id: c.id } : {}), function: { name: c.name, arguments: "" } };
     body += `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [first] } }] })}\n\n`;
@@ -218,6 +239,43 @@ describe("chat tool loop", () => {
     expect(meta.tools).toHaveLength(1);
     expect(meta.tools[0]).toMatchObject({ server: "ketch", name: "search", ms: 5, ok: true, args: '{"q":"x"}' });
     expect(meta.usage).toEqual({ total_tokens: 7 });
+    // Text-less first round: chips ride at the top, the answer follows (issue #7).
+    expect(meta).toMatchObject({ parts: [{ type: "tools", count: 1 }, { type: "text", text: "Answer" }] });
+  });
+
+  it("multi-round turn: meta.parts keeps the text/tool execution order", async () => {
+    let n = 0;
+    mock.route(CHAT, () => {
+      n += 1;
+      if (n === 1)
+        return sseTextAndToolCalls("Looking it up. ", [{ id: "t0", name: "mcp__ketch__search", args: '{"q":"a"}' }]);
+      if (n === 2)
+        return sseTextAndToolCalls("One more. ", [{ id: "t1", name: "mcp__ketch__search", args: '{"q":"b"}' }]);
+      return sseCompletion("Final answer.");
+    });
+    const events = await drain(await postChat({}));
+    const threadId = events[0].threadId as string;
+    const row = assistantRows(threadId)[0];
+    expect(row.content).toBe("Looking it up. One more. Final answer.");
+    const meta = JSON.parse(row.metaJson!) as { tools: unknown[]; parts: unknown[] };
+    expect(meta.tools).toHaveLength(2);
+    expect(meta.parts).toEqual([
+      { type: "text", text: "Looking it up. " },
+      { type: "tools", count: 1 },
+      { type: "text", text: "One more. " },
+      { type: "tools", count: 1 },
+      { type: "text", text: "Final answer." },
+    ]);
+    // Model-facing history is unchanged by the ordering meta: the two stored
+    // rounds replay as their synthesized exchanges only when offered again —
+    // the live second/third upstream calls just append their dispatched pairs.
+    const bodies = upstreamBodies(mock);
+    const round2Tail = bodies[1].messages.slice(-2);
+    expect(round2Tail.map((m) => m.role)).toEqual(["assistant", "tool"]);
+    const round3Tail = bodies[2].messages.slice(-2);
+    expect(round3Tail.map((m) => m.role)).toEqual(["assistant", "tool"]);
+    // No stored-round rebuild happened mid-turn (single row at the end).
+    expect(assistantRows(threadId)).toHaveLength(1);
   });
 
   it("parallel calls incl. unknown tool name → error result, no throw", async () => {
@@ -348,9 +406,10 @@ describe("chat tool loop", () => {
     expect(rest.at(-1)).toMatchObject({ done: true, aborted: true });
 
     const rows = db.select().from(messages).where(eq(messages.role, "assistant")).all();
-    const meta = JSON.parse(rows[0].metaJson!) as { aborted: boolean; tools: unknown[] };
+    const meta = JSON.parse(rows[0].metaJson!) as { aborted: boolean; tools: unknown[]; parts: unknown[] };
     expect(meta.aborted).toBe(true);
     expect(meta.tools).toHaveLength(1);
+    expect(meta.parts).toEqual([{ type: "text", text: "So slowly" }, { type: "tools", count: 1 }]);
   });
 
   it("in-flight abort during a later round fetch persists the partial", async () => {
@@ -506,6 +565,26 @@ describe("mcp loop helpers", () => {
     acc.feed([{ function: { name: "solo" } }]); // no index → 0, id synthesized
     expect(acc.calls()).toEqual([
       { id: "call_0", type: "function", function: { name: "solo", arguments: "" } },
+    ]);
+  });
+
+  it("createTurnParts interleaves text with tool rounds", () => {
+    const t = createTurnParts();
+    expect(t.parts()).toBeUndefined(); // no round dispatched → no ordering meta
+    t.onText("a");
+    expect(t.parts()).toBeUndefined();
+    t.onToolRound(2);
+    expect(t.parts()).toEqual([
+      { type: "text", text: "a" },
+      { type: "tools", count: 2 },
+    ]);
+    t.onToolRound(1); // back-to-back rounds: no empty text part between them
+    t.onText("b");
+    expect(t.parts()).toEqual([
+      { type: "text", text: "a" },
+      { type: "tools", count: 2 },
+      { type: "tools", count: 1 },
+      { type: "text", text: "b" },
     ]);
   });
 

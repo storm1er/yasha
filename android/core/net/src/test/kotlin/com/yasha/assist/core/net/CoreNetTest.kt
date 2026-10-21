@@ -286,3 +286,34 @@ class McpUserServersDtoTest {
         assertNull(McpHealthDto().code)
     }
 }
+
+class MessageMetaDtoTest {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    @Test
+    fun `parses the ordered turn parts`() {
+        val meta = json.decodeFromString(
+            MessageMetaDto.serializer(),
+            """{"tools":[{"server":"s","name":"n","ok":true,"args":"{}","result":"r"}],
+               "parts":[{"type":"text","text":"Lead. "},{"type":"tools","count":1},{"type":"text","text":"Done."}]}""",
+        )
+        assertEquals(
+            listOf(
+                PartDto("text", text = "Lead. "),
+                PartDto("tools", count = 1),
+                PartDto("text", text = "Done."),
+            ),
+            meta.parts,
+        )
+    }
+
+    @Test
+    fun `legacy rows without parts default to null`() {
+        val meta = json.decodeFromString(
+            MessageMetaDto.serializer(),
+            """{"tools":[{"server":"s","name":"n","ok":true}]}""",
+        )
+        assertNull(meta.parts)
+        assertEquals(1, meta.tools.size)
+    }
+}

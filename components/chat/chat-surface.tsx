@@ -25,6 +25,14 @@ type ToolChip = {
   result?: string;
 };
 
+/** Ordered rendering segment of an assistant turn (issue #7): tool chips
+ *  interleaved with the surrounding text in execution order. Built live from
+ *  SSE arrival order and from `meta.parts` for stored turns; absent (legacy
+ *  rows / plain text turns) means "chips above the text" as before. */
+type MessageSegment =
+  | { kind: "text"; text: string }
+  | { kind: "tools"; tools: ToolChip[] };
+
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
@@ -35,6 +43,7 @@ type ChatMessage = {
   audioTranscriptFailed?: boolean;
   audioCaptionPending?: boolean;
   tools?: ToolChip[];
+  segments?: MessageSegment[];
   streaming?: boolean;
   /** Set when the assistant turn for this user message failed upstream
    *  (persisted in meta.error) — renders the red retry notice. */
@@ -61,12 +70,41 @@ type ServerMessage = {
   meta?: {
     images?: unknown;
     tools?: unknown;
+    parts?: unknown;
     audio?: unknown;
     audioTranscript?: unknown;
     audioTranscriptFailed?: unknown;
     error?: unknown;
   } | null;
 };
+
+/** Stored `meta.parts` + the flat tool chips → ordered segments; undefined on
+ *  any mismatch (legacy rows, malformed data) so rendering falls back to
+ *  "chips above text". `tools` parts consume the flat list in order. */
+function mapSegments(parts: unknown, tools: ToolChip[] | undefined): MessageSegment[] | undefined {
+  if (!Array.isArray(parts) || !tools) return undefined;
+  const out: MessageSegment[] = [];
+  let i = 0;
+  for (const raw of parts) {
+    if (!raw || typeof raw !== "object") return undefined;
+    const part = raw as { type?: unknown; text?: unknown; count?: unknown };
+    if (part.type === "text") {
+      if (typeof part.text !== "string") return undefined;
+      out.push({ kind: "text", text: part.text });
+    } else if (part.type === "tools") {
+      const n =
+        typeof part.count === "number" && Number.isInteger(part.count) && part.count >= 0
+          ? part.count
+          : -1;
+      if (n < 0 || i + n > tools.length) return undefined;
+      out.push({ kind: "tools", tools: tools.slice(i, i + n) });
+      i += n;
+    } else {
+      return undefined;
+    }
+  }
+  return i === tools.length ? out : undefined;
+}
 
 function mapMessage(m: ServerMessage): ChatMessage {
   const images = Array.isArray(m.meta?.images)
@@ -87,6 +125,15 @@ function mapMessage(m: ServerMessage): ChatMessage {
           typeof (t as { ok?: unknown }).ok === "boolean",
       )
     : undefined;
+  const chips = tools?.length
+    ? tools.map((t) => ({
+        server: t.server,
+        name: t.name,
+        status: t.ok ? ("done" as const) : ("error" as const),
+        args: typeof t.args === "string" ? t.args : undefined,
+        result: typeof t.result === "string" ? t.result : undefined,
+      }))
+    : undefined;
   return {
     id: m.id,
     role: m.role,
@@ -96,15 +143,8 @@ function mapMessage(m: ServerMessage): ChatMessage {
     audioTranscript,
     audioTranscriptFailed,
     turnError,
-    tools: tools?.length
-      ? tools.map((t) => ({
-          server: t.server,
-          name: t.name,
-          status: t.ok ? ("done" as const) : ("error" as const),
-          args: typeof t.args === "string" ? t.args : undefined,
-          result: typeof t.result === "string" ? t.result : undefined,
-        }))
-      : undefined,
+    tools: chips,
+    segments: mapSegments(m.meta?.parts, chips),
   };
 }
 
@@ -142,6 +182,24 @@ function ToolChipRow({
         <ToolChipView key={`${tc.server}:${tc.name}:${i}`} tool={tc} label={label(tc.status, tc.name)} />
       ))}
     </div>
+  );
+}
+
+function ToolSegments({ segments, label }: { segments: MessageSegment[]; label: (status: ToolChip["status"], name: string) => string }) {
+  return (
+    <>
+      {segments.map((seg, i) =>
+        seg.kind === "tools" ? (
+          <ToolChipRow key={`tools-${i}`} tools={seg.tools} label={label} />
+        ) : (
+          <div key={`text-${i}`} className="md text-[15px]">
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
+              {seg.text}
+            </ReactMarkdown>
+          </div>
+        ),
+      )}
+    </>
   );
 }
 
@@ -466,11 +524,29 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
               assistantStarted = true;
               setMessages((prev) => [
                 ...prev,
-                { id: tempAssistantId, role: "assistant", content: ev.c!, streaming: true },
+                {
+                  id: tempAssistantId,
+                  role: "assistant",
+                  content: ev.c!,
+                  segments: [{ kind: "text", text: ev.c! }],
+                  streaming: true,
+                },
               ]);
             } else {
               setMessages((prev) =>
-                prev.map((m) => (m.id === tempAssistantId ? { ...m, content: m.content + ev.c } : m))
+                prev.map((m) => {
+                  if (m.id !== tempAssistantId) return m;
+                  // Live ordering = SSE arrival order: deltas extend the
+                  // trailing text segment (a chip in between started a new one).
+                  const segments = [...(m.segments ?? [])];
+                  const last = segments[segments.length - 1];
+                  if (last && last.kind === "text") {
+                    segments[segments.length - 1] = { kind: "text", text: last.text + ev.c };
+                  } else {
+                    segments.push({ kind: "text", text: ev.c! });
+                  }
+                  return { ...m, content: m.content + ev.c, segments };
+                })
               );
             }
           }
@@ -486,7 +562,23 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
                 );
                 if (idx >= 0) tools[idx] = ev.tool!;
                 else tools.push(ev.tool!);
-                return { ...m, tools };
+                const segments = [...(m.segments ?? [])];
+                const last = segments[segments.length - 1];
+                if (last && last.kind === "tools") {
+                  const seg = [...last.tools];
+                  const segIdx = seg.findIndex(
+                    (tc) =>
+                      tc.status === "running" &&
+                      tc.server === ev.tool!.server &&
+                      tc.name === ev.tool!.name,
+                  );
+                  if (segIdx >= 0) seg[segIdx] = ev.tool!;
+                  else seg.push(ev.tool!);
+                  segments[segments.length - 1] = { kind: "tools", tools: seg };
+                } else {
+                  segments.push({ kind: "tools", tools: [ev.tool!] });
+                }
+                return { ...m, tools, segments };
               })
             );
           }
@@ -601,6 +693,12 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
   }
 
   const showHero = messages.length === 0 && !streaming && !loadingHistory;
+  const toolLabel = (status: ToolChip["status"], name: string) =>
+    status === "running"
+      ? t("toolRunning", { name })
+      : status === "done"
+        ? t("toolDone", { name })
+        : t("toolError", { name });
   const awaitingFirstToken =
     streaming && !messages.some((m) => m.role === "assistant" && m.streaming);
   const lastAssistantId = messages.filter((m) => m.role === "assistant").at(-1)?.id;
@@ -785,23 +883,20 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
                     <div className="group flex w-full gap-3">
                       <Sparkle className="mt-1 size-6" title={t("assistant")} />
                       <div className="min-w-0 flex-1">
-                        {m.tools && m.tools.length > 0 && (
-                          <ToolChipRow
-                            tools={m.tools}
-                            label={(status, name) =>
-                              status === "running"
-                                ? t("toolRunning", { name })
-                                : status === "done"
-                                  ? t("toolDone", { name })
-                                  : t("toolError", { name })
-                            }
-                          />
+                        {m.segments && m.segments.length > 0 ? (
+                          <ToolSegments segments={m.segments} label={toolLabel} />
+                        ) : (
+                          <>
+                            {m.tools && m.tools.length > 0 && (
+                              <ToolChipRow tools={m.tools} label={toolLabel} />
+                            )}
+                            <div className="md text-[15px]">
+                              <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
+                                {m.content}
+                              </ReactMarkdown>
+                            </div>
+                          </>
                         )}
-                        <div className="md text-[15px]">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
-                            {m.content}
-                          </ReactMarkdown>
-                        </div>
                         {!m.streaming && (
                           <div className="mt-1 flex items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
                             <button

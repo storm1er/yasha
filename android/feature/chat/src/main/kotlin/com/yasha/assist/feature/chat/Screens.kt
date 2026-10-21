@@ -673,20 +673,43 @@ private fun MessageRow(msg: UiMessage, isLast: Boolean, onRetryTranscribe: (Stri
                 }
                 if (msg.text.isNotEmpty()) Spacer(Modifier.height(10.dp))
             }
-            if (msg.tools.isNotEmpty()) {
-                ToolChips(msg.tools)
-                Spacer(Modifier.height(8.dp))
-            }
-            if (msg.streaming && msg.text.isEmpty()) {
-                // Awaiting the first token: animated shimmer (web parity);
-                // the old " ▌" cursor on empty text rendered as a black block.
-                ThinkingLoader()
+            if (msg.segments.isNotEmpty()) {
+                // Ordered text/tool interleaving (issue #7): chips render at
+                // their execution position between the surrounding text.
+                val lastTextIndex = msg.segments.indexOfLast { it is UiSegment.Text }
+                msg.segments.forEachIndexed { i, seg ->
+                    when (seg) {
+                        is UiSegment.Tools -> {
+                            ToolChips(seg.tools)
+                            Spacer(Modifier.height(8.dp))
+                        }
+                        is UiSegment.Text -> YashaMarkdown(
+                            content = seg.text,
+                            streaming = msg.streaming && i == lastTextIndex,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+                if (msg.streaming && msg.text.isEmpty()) {
+                    // Chips streamed before the first token: shimmer stays below.
+                    ThinkingLoader()
+                }
             } else {
-                YashaMarkdown(
-                    content = msg.text,
-                    streaming = msg.streaming,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                if (msg.tools.isNotEmpty()) {
+                    ToolChips(msg.tools)
+                    Spacer(Modifier.height(8.dp))
+                }
+                if (msg.streaming && msg.text.isEmpty()) {
+                    // Awaiting the first token: animated shimmer (web parity);
+                    // the old " ▌" cursor on empty text rendered as a black block.
+                    ThinkingLoader()
+                } else {
+                    YashaMarkdown(
+                        content = msg.text,
+                        streaming = msg.streaming,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             }
             if (!msg.streaming && msg.text.isNotEmpty()) {
                 Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(18.dp)) {

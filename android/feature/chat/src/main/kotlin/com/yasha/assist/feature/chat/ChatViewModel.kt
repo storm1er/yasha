@@ -40,6 +40,9 @@ data class UiMessage(
     val text: String,
     val images: List<String> = emptyList(),
     val tools: List<UiTool> = emptyList(),
+    // Ordered text/tool interleaving of an assistant turn (issue #7). Empty =
+    // fall back to "chips above the text" (legacy rows without meta.parts).
+    val segments: List<UiSegment> = emptyList(),
     val streaming: Boolean = false,
     // Voice messages (AUDIO-REFACTO-PLAN): data URL + background caption.
     val audio: String? = null,
@@ -260,14 +263,16 @@ class ChatViewModel(
                         pickedModel = threadPick,
                         error = null,
                         messages = r.value.messages.map { m ->
+                            val uiTools = m.meta?.tools.orEmpty().map { t ->
+                                UiTool(t.server, t.name, if (t.ok) "done" else "error", t.args, t.result)
+                            }
                             UiMessage(
                                 id = m.id,
                                 role = m.role,
                                 text = m.content,
                                 images = m.meta?.images.orEmpty(),
-                                tools = m.meta?.tools.orEmpty().map { t ->
-                                    UiTool(t.server, t.name, if (t.ok) "done" else "error", t.args, t.result)
-                                },
+                                tools = uiTools,
+                                segments = TurnSegments.fromStored(m.meta?.parts, uiTools).orEmpty(),
                                 audio = m.meta?.audio,
                                 audioTranscript = m.meta?.audioTranscript,
                                 audioTranscriptFailed = m.meta?.audioTranscriptFailed == true,
@@ -385,18 +390,22 @@ class ChatViewModel(
                     }
                     is ChatEvent.Delta -> _state.update {
                         val msgs = it.messages.toMutableList()
-                        val last = msgs.last().copy(text = msgs.last().text + ev.text)
-                        msgs[msgs.lastIndex] = last
+                        val last = msgs.last()
+                        // Live ordering = SSE arrival order (issue #7): the
+                        // text mirror drives copy/scroll, segments drive render.
+                        msgs[msgs.lastIndex] = last.copy(
+                            text = last.text + ev.text,
+                            segments = TurnSegments.appendText(last.segments, ev.text),
+                        )
                         it.copy(messages = msgs)
                     }
                     is ChatEvent.ToolProgress -> _state.update {
                         val msgs = it.messages.toMutableList()
                         val last = msgs.last()
                         val tool = UiTool(ev.server, ev.name, ev.status, ev.args, ev.result)
-                        val tools = last.tools.toMutableList()
-                        val idx = tools.indexOfLast { tl -> tl.status == "running" && tl.server == ev.server && tl.name == ev.name }
-                        if (idx >= 0) tools[idx] = tool else tools.add(tool)
-                        msgs[msgs.lastIndex] = last.copy(tools = tools)
+                        msgs[msgs.lastIndex] = last.copy(
+                            segments = TurnSegments.applyTool(last.segments, tool),
+                        )
                         it.copy(messages = msgs)
                     }
                     is ChatEvent.Done -> finishGeneration(aborted = ev.aborted, sawThreadId = sawThreadId)
@@ -435,7 +444,7 @@ class ChatViewModel(
             if (msgs.isNotEmpty() && msgs.last().streaming) {
                 val last = msgs.removeAt(msgs.lastIndex)
                 // Keep a tool-only turn visible (its chips live in the DB too).
-                if (last.text.isNotEmpty() || last.tools.isNotEmpty()) {
+                if (last.text.isNotEmpty() || last.segments.isNotEmpty()) {
                     msgs.add(last.copy(streaming = false))
                 }
             }
