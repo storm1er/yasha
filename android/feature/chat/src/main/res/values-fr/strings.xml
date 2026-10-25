@@ -68,7 +68,7 @@
     <string name="admin_zone_title">Administration</string>
     <string name="tab_memory">Mémoire</string>
     <string name="tab_phone">Téléphone</string>
-    <string name="tab_lemonade">Lemonade</string>
+    <string name="tab_backend">Backend</string>
     <string name="tab_jobs">Tâches d\'arrière-plan</string>
     <string name="save">Enregistrer</string>
     <string name="saved">Enregistré</string>

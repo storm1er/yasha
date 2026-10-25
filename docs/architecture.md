@@ -15,20 +15,24 @@ How Yasha works internally. Product-level description lives in the [README](../R
  │  MCP client layer (stdio + remote, OAuth)                                           │
  │  APK builder (spawns gradle in-image)                                               │
  └───────────────┬───────────────────────────────┬─────────────────────────────────────┘
-                 │ LEMONADE_BASE_URL (internal    │ optional outbound: remote MCP servers
-                 │ docker network, or external)   │
+                 │ providers table (lib/provider/) │ optional outbound: remote MCP servers
                  ▼
-        Lemonade server (bundled container or your own)
-        /v1/chat/completions · /v1/audio/* · /v1/models · admin actions
+   n enabled providers: Lemonade (bundled container or your own —
+   adds the management console) + any OpenAI-compatible server.
+   /v1/chat/completions · /v1/audio/* · /v1/models (+ Lemonade admin actions)
 ```
 
 - **One container, mostly stateless compute + one stateful file.** All persistent state lives in
   the SQLite database (`DATABASE_PATH`, default `/data/yasha.db`) plus uploaded media under the
   same `/data` volume. Back up the volume, nothing else.
-- **Lemonade is the only model backend.** Yasha never talks to model providers directly; it
-  consumes Lemonade's OpenAI-compatible surface (`chat/completions`, `audio/transcriptions`,
-  `audio/speech`, `models`, admin endpoints). Reasoning fields in upstream responses are
-  ignored — only `content` is rendered/persisted.
+- **Pluggable provider layer (`lib/provider/`).** 0..n providers from the `providers` table
+  (env-seeded on first boot): the `lemonade` adapter (flagship — adds the admin control plane:
+  models, pull/load/unload, registry, pin) and `openai_compatible` for any server exposing
+  `POST /v1/chat/completions` + `GET /v1/models`. A synced `models` catalog table (TTL re-sync +
+  admin capability overrides) drives chat validation and vision/audio flags. Everything
+  user-facing speaks **canonical `provider:remote` model ids**; only outbound upstream bodies
+  carry the provider's remote id. Reasoning fields in upstream responses are ignored — only
+  `content` is rendered/persisted.
 - **No Redis/message broker**: the background queue is a table (`jobs`) polled by an in-process
   worker started from `instrumentation.ts`; `NEXT_PHASE` guards prevent the worker from
   self-starting during builds. Handlers live in `lib/jobs/` and `lib/memory/`.
@@ -38,13 +42,13 @@ How Yasha works internally. Product-level description lives in the [README](../R
 ### Chat turn (web UI)
 1. `POST /api/chat` — auth via better-auth session cookie; attachments (images/audio) are
    validated/stored beforehand under `/data`.
-2. Model choice: user picks Fast/Smart; routing + per-model context/limits come from Lemonade's
-   model list (cached; see `lib/chat-models-filter.ts`).
+2. Model choice: user picks Fast/Smart; routing + capability flags come from the synced
+   provider catalog (`lib/provider/catalog.ts`, TTL 60 s, stale rows served on upstream failure).
 3. If tools are enabled (instance `mcp.enabled`, not per-user opted out), `lib/mcp/loop.ts` runs
-   bounded tool rounds: Lemonade completion → tool calls → MCP clients (`lib/mcp/client.ts`,
+   bounded tool rounds: provider completion → tool calls → MCP clients (`lib/mcp/client.ts`,
    stdio or HTTP; `lib/mcp/oauth/` for OAuth'd remote servers) → results fed back.
 4. Memory recall (FTS5 + optional summaries) is injected per `lib/memory/recall.ts`.
-5. The Lemonade stream is re-emitted as SSE (first-token timeout guarded); token deltas are
+5. The upstream stream is re-emitted as SSE (first-token timeout guarded); token deltas are
    persisted at completion, then enqueued jobs may follow (title generation, audio transcription,
    memory extraction).
 
@@ -65,6 +69,7 @@ The web image ships a full Android toolchain (`docker/Dockerfile` toolchain/prew
 | Auth (better-auth) | `user`, `session`, `account`, `verification` |
 | Chat | `threads`, `messages` |
 | Config | `settings` (instance-level key/value), `userSettings` (per-user overrides) |
+| Backends | `providers` (adapter rows; API key masked on read), `models` (synced catalog cache + capability overrides) |
 | Tools | `mcpServers`, `mcpOauth` |
 | Queue | `jobs`, `jobCheckpoints` |
 | Memory | `memories`, `threadSummaries` |
@@ -81,8 +86,10 @@ is auto-migrated at boot (`lib/db/bootstrap.ts`).
 - Session auth (better-auth) for the app; hashed API keys for `/v1`; role flag `isAdmin` gates
   `/api/admin/*`. CSRF/origin checks via `BETTER_AUTH_TRUSTED_ORIGINS`; coarse in-app rate
   limiting (`lib/rate-limit.ts`) on top of proxy-level limits.
-- Lemonade is trusted-but-contained: never published publicly; mutating admin actions require
-  `ADMIN_ALLOW_MUTATIONS=true` and an admin role.
+- Backends are trusted-but-contained: never published publicly; mutating control-plane actions
+  require `ADMIN_ALLOW_BACKEND_MUTATIONS=true` and an admin role (plain OpenAI-compatible
+  providers have no control plane — those routes answer 501). Provider API keys live in the DB
+  (volume = secret boundary), masked on every read, never logged.
 - MCP servers are a trust boundary: private/loopback URLs denied unless
   `MCP_ALLOW_PRIVATE_URLS=true`; admin denylists per server; users can only opt out.
 - SSRF/attachment guards: image/audio size + count caps (settings), FTS only over a user's own
@@ -98,5 +105,6 @@ The Android app (`android/`) is a separate Gradle project (Kotlin/Compose) talki
 ## Testing
 
 Vitest suite in `tests/` running in the web image: throwaway SQLite per worker, guarded `fetch`
-(un-mocked Lemonade calls fail), route-level tests through real `NextRequest`s. Server scope
+(un-mocked backend calls fail), route-level tests through real `NextRequest`s; shared adapter
+contract suite per provider type. Server scope
 enforced at 100% coverage (`vitest.config.mts`). Harness details: [AGENTS.md](../AGENTS.md).

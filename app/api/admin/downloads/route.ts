@@ -1,17 +1,16 @@
 import { NextResponse } from "next/server";
-import { requireAdmin, upstreamErrorResponse } from "@/lib/admin-auth";
-import { downloads } from "@/lib/lemonade-admin";
+import { requireControlPlane, upstreamErrorResponse } from "@/lib/admin-auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** GET /api/admin/downloads → Lemonade download-queue passthrough (admin only). */
-export async function GET() {
-  const guard = await requireAdmin();
+/** GET /api/admin/downloads → control-plane download-queue passthrough (admin only). */
+export async function GET(req: Request) {
+  const guard = await requireControlPlane(req);
   if (!guard.ok) return guard.response;
 
   try {
-    const json = await downloads();
+    const json = await guard.cp.downloads();
     return NextResponse.json(json);
   } catch {
     return upstreamErrorResponse();

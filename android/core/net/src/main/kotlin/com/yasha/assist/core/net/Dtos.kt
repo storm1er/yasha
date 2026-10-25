@@ -11,7 +11,7 @@ data class ModelsDto(
 )
 
 @Serializable
-data class ModelDto(val id: String, val label: String? = null, val vision: Boolean? = null)
+data class ModelDto(val id: String, val name: String? = null, val label: String? = null, val vision: Boolean? = null)
 
 @Serializable
 data class ThreadsDto(val threads: List<ThreadRowDto>)
@@ -61,8 +61,8 @@ data class ToolMetaDto(
 @Serializable
 data class McpPrefsDto(val userEnabled: Boolean? = null, val instanceEnabled: Boolean = true)
 
-// GET /api/audio/config (AUDIO-REFACTO-PLAN §3/§4). enabled ⇔ the FAST model
-// is on the audio-compat list; the smart model is never used for audio input.
+// GET /api/audio/config. enabled ⇔ the FAST model is flagged audio-input in
+// the synced catalog (server-side capability, M2b); smart is never used for voice.
 @Serializable
 data class AudioConfigDto(
     val enabled: Boolean = false,

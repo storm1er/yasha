@@ -2,8 +2,9 @@
 
 # 🍋 Yasha
 
-**Yet Another Self-Hosted Assistant** — a Gemini-style multi-user chat UI on top of a
-[Lemonade](https://lemonade-server.ai) server.
+**Yet Another Self-Hosted Assistant** — a Gemini-style multi-user chat UI on top of
+**your own model backends**: [Lemonade](https://lemonade-server.ai) (first-class, bundled)
+plus any OpenAI-compatible server, managed by admins under Settings → Backend.
 
 Self-hosted · Private · Multi-language (en/fr) · Web + Android
 
@@ -29,12 +30,12 @@ Self-hosted · Private · Multi-language (en/fr) · Web + Android
 - 📱 Responsive: desktop rail sidebar + mobile drawer
 - 🔑 Per-user API keys (`/settings`) for the OpenAI-compatible `/v1` endpoint
   (docs at `/docs/api`)
-- 🧠 Model routing via Lemonade (Fast/Smart pickers), health badge for backend status
+- 🧠 Multi-provider backends with Fast/Smart pickers over a synced model catalog; per-provider health badge
 - 🎙️ Voice input sent natively to audio-capable models — no transcription service to deploy
 - 🧩 Memory & Gemini import, background job queue
 - 🔎 Agentic tools via MCP (builtin ketch search server, admin-managed, per-user opt-out)
 - 🤖 Companion Android assistant app (overlay mic, circle-to-ask, per-user APK builds)
-- 🍋 Bundled Lemonade server container — or point Yasha at your own instance
+- 🍋 Bundled Lemonade server container — or register any number of OpenAI-compatible providers
 
 ## Screenshots
 
@@ -94,7 +95,8 @@ published. **<ins>Enable what you need by uncommenting lines in `compose.overrid
   `https://<public-host>` → `http://127.0.0.1:3000` with `Host` +
   `X-Forwarded-Proto: https`.
 - **Bundled LLM backend** → Lemonade block (`replicas: 1`, optional NVIDIA/AMD
-  GPU lines). Prefer your own? Point `LEMONADE_BASE_URL` at it in `.env`.
+  GPU lines). Prefer your own? Point `BACKEND_BASE_URL` at it in `.env` (more providers later
+  in Settings → Backend).
 
 The stack keeps all state in `./data` (SQLite DB — chat history & attachments
 included —, import spool, APK artifacts) — that directory is your whole backup.
@@ -102,7 +104,7 @@ Caddy keeps its certificates in named volumes (`caddy_data`). More info about
 upgrades, restores, and the proxy checklist: [docs/admin-guide.md](docs/admin-guide.md).
 
 Voice input: tap the mic in chat and talk : the recording is sent natively to the
-audio-capable fast model (Gemma 4 E2B/E4B/12B; see Settings → Lemonade) and gets a
+audio-capable fast model (capability flags in the synced catalog; see Settings → Backend) and gets a
 readable caption from a background job. No transcription service to deploy.
 
 No Text-to-Speech _yet_.
@@ -117,7 +119,7 @@ docker run -d --name yasha \
   -p 127.0.0.1:3333:3000 \
   -v yasha-data:/data \
   --add-host=host.docker.internal:host-gateway \
-  -e LEMONADE_BASE_URL=http://host.docker.internal:13305 \
+  -e BACKEND_BASE_URL=http://host.docker.internal:13305 \
   -e BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
   -e BETTER_AUTH_URL=https://<public-host> \
   -e BETTER_AUTH_TRUSTED_ORIGINS=https://<public-host> \

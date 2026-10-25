@@ -22,7 +22,7 @@
     <string name="model_auto">Auto</string>
     <string name="model_fast">Fast</string>
     <string name="model_smart">Smart</string>
-    <string name="no_vision_model">No vision-capable model is configured. Image attachments are disabled — the admin must pick a model tagged “vision” (see the Lemonade catalog).</string>
+    <string name="no_vision_model">No vision-capable model is configured. Image attachments are disabled — the admin must pick a vision-flagged model (see the Backend settings tab).</string>
     <string name="input_hint">Ask Yasha</string>
     <string name="greeting_plain">How can I help you?</string>
     <string name="greeting_name">How can I help you, %1$s?</string>
@@ -68,7 +68,7 @@
     <string name="admin_zone_title">Administration</string>
     <string name="tab_memory">Memory</string>
     <string name="tab_phone">Phone</string>
-    <string name="tab_lemonade">Lemonade</string>
+    <string name="tab_backend">Backend</string>
     <string name="tab_jobs">Background jobs</string>
     <string name="save">Save</string>
     <string name="saved">Saved</string>
@@ -178,7 +178,7 @@
     <string name="chat_max_window_images">Images per request window</string>
     <string name="chat_max_upload">Max upload (MB)</string>
     <string name="models_title">Models</string>
-    <string name="models_intro">Lemonade catalog. Load/unload/delete apply when server mutations are enabled.</string>
+    <string name="models_intro">Management console of the selected Lemonade backend. Load/unload/delete apply when server mutations are enabled.</string>
     <string name="catalog_failed">Could not load the model list.</string>
     <string name="model_downloaded">Downloaded</string>
     <string name="model_not_downloaded">Not downloaded</string>

@@ -101,6 +101,8 @@ data class SettingsUiState(
     // auth.allowRegistration kill-switch (admin; mirrors the web security panel).
     val registrationAllowed: Boolean = true,
     val chatCapableModels: List<String> = emptyList(),
+    /** Canonical model id → display label ("name · providerId") from the synced catalog. */
+    val modelLabels: Map<String, String> = emptyMap(),
     val titleTask: TaskConfig = TaskConfig(),
     val audioTask: TaskConfig = TaskConfig(),
     val memories: List<MemoryRow> = emptyList(),
@@ -211,7 +213,7 @@ class SettingsViewModel(
                 "general" -> { loadMcpPrefs(); loadUserMcp() }
                 "security" -> { refreshValues(); loadGeneral(); loadSelf(); if (isAdminNow()) loadUsers() }
                 "memory" -> { refreshValues(); loadMemories(); if (isAdminNow()) loadTasksFromValues() }
-                "lemonade" -> { loadLemonade(); if (isAdminNow()) loadAdminMcp() }
+                "backend" -> { loadLemonade(); if (isAdminNow()) loadAdminMcp() }
                 "jobs" -> { refreshValues(); loadRuntime(); loadJobs() }
             }
         }
@@ -310,16 +312,20 @@ class SettingsViewModel(
         )
     }
 
+    // Synced catalog (M2c/M3): canonical provider:remote ids + display names.
+    // The old client-side Lemonade label/downloaded mirror is gone — the server
+    // owns chat filtering now.
     private suspend fun loadChatModelOptions() {
-        val m = client.getJson("/api/admin/models")
-        val ids = if (m is ApiResult.Ok) jsonObj(m.value)?.get("models")?.asArr()?.mapNotNull {
+        val m = client.getJson("/api/models/catalog")
+        if (m !is ApiResult.Ok) return
+        val rows = jsonObj(m.value)?.get("models")?.asArr()?.mapNotNull {
             val o = it.asObj() ?: return@mapNotNull null
             val id = o["id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-            val dl = o["downloaded"]?.jsonPrimitive?.booleanOrNull == true
-            val chat = o["labels"]?.asArr()?.any { l -> l.jsonPrimitive.contentOrNull == "chat" } == true
-            if (chat && (dl || id.startsWith("openrouter"))) id else null
-        }?.sorted().orEmpty() else _state.value.chatCapableModels
-        _state.update { it.copy(chatCapableModels = ids) }
+            val name = o["name"]?.jsonPrimitive?.contentOrNull
+            val provider = o["providerId"]?.jsonPrimitive?.contentOrNull
+            id to (if (provider != null) "${name ?: id} · $provider" else (name ?: id))
+        }.orEmpty()
+        _state.update { it.copy(chatCapableModels = rows.map { (id, _) -> id }, modelLabels = rows.toMap()) }
     }
 
     private fun loadTasksFromValues() {

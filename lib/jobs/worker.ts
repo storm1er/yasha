@@ -16,7 +16,8 @@ import {
   type EventConfig,
   type QueueJobType,
 } from "@/lib/settings";
-import { BASE_URL, forEachSseData } from "@/lib/lemonade-stream";
+import { forEachSseData } from "@/lib/provider/http";
+import { routeModel } from "@/lib/provider/catalog";
 import { handleTitleGeneration } from "./handlers";
 import { handleGeminiImport, sweepGeminiSpools } from "./gemini-import";
 import { handleAudioTranscription } from "./audio-transcribe";
@@ -466,18 +467,18 @@ async function completeAttempt(
   maxTokens: number,
   temperature?: number,
 ): Promise<string> {
-  const res = await fetch(`${BASE_URL}/v1/chat/completions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: opts.model,
+  const route = await routeModel(opts.model);
+  if (!route) throw new Error("no_backend");
+  const res = await route.provider.completion(
+    {
+      model: route.model,
       messages: opts.messages,
       stream: true,
       max_tokens: maxTokens,
       ...(temperature !== undefined ? { temperature } : {}),
-    }),
-    signal: opts.signal,
-  });
+    },
+    opts.signal,
+  );
   if (!res.ok || !res.body) throw new Error(`upstream_status_${res.status}`);
   let text = "";
   await forEachSseData(res.body, (payload) => {

@@ -12,10 +12,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 
-type ModelOption = { id: string; label?: string; vision?: boolean };
+type ModelOption = { id: string; name?: string; label?: string; vision?: boolean };
 export type ModelCapabilities = { defaultId: string; models: ModelOption[]; noVision: boolean };
 
 const STORAGE_KEY = "yasha.model";
+
+/** Human label for a model option: the provider's own id when known. */
+const displayName = (m: ModelOption) => m.name ?? m.id;
 
 export function ModelPicker({
   onChange,
@@ -109,7 +112,7 @@ export function ModelPicker({
     <DropdownMenu>
       <DropdownMenuTrigger
         aria-label={t("model")}
-        title={current.id}
+        title={displayName(current)}
         data-testid="model-picker"
         className={cn(
           "flex max-w-[220px] cursor-pointer items-center gap-1 rounded-full px-2.5 py-1.5",
@@ -117,7 +120,7 @@ export function ModelPicker({
           "hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50"
         )}
       >
-        <span className="hidden truncate md:inline">{current.id}</span>
+        <span className="hidden truncate md:inline">{displayName(current)}</span>
         {current.label === "fast" && (
           <Badge
             variant="outline"
@@ -141,7 +144,7 @@ export function ModelPicker({
       <DropdownMenuContent side="top" align="end" className="min-w-60">
         {models.map((m) => (
           <DropdownMenuItem key={m.id} onClick={() => select(m.id)}>
-            <span className="min-w-0 flex-1 truncate">{m.id}</span>
+            <span className="min-w-0 flex-1 truncate">{displayName(m)}</span>
             {m.label === "fast" && (
               <Badge className="border-transparent bg-[#e8f0fe] text-[#1967d2] dark:bg-[#26314a] dark:text-[#8ab4f8]">
                 {t("modelFast")}

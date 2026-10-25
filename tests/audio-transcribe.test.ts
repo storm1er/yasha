@@ -2,6 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { ensureReady } from "@/lib/db";
 import { db, setFastModel, setSetting } from "./support/db";
+import { seedModel } from "./support/catalog";
 import { adminUser, type AdminUser } from "./support/app";
 import { mockLemonade, sseCompletion, type LemonadeMock } from "./support/lemonade";
 import { messages, threads } from "@/lib/db/schema";
@@ -16,7 +17,7 @@ import { encodeWavPcm16 } from "@/lib/browser/wav";
 
 const CHAT = "/v1/chat/completions";
 const AUDIO = "data:audio/wav;base64,UklGRg==";
-const GEMMA = "user.gemma-4-E4B-it-GGUF-UD-Q4_K_XL";
+const GEMMA = "default:user.gemma-4-E4B-it-GGUF-UD-Q4_K_XL"; // canonical (Q6)
 
 /** PCM16 WAV data URL of `seconds` of silence (splittable by lib/audio-split). */
 function longWav(seconds: number): string {
@@ -76,6 +77,8 @@ beforeEach(() => {
   mock = mockLemonade();
   db.delete(messages).run();
   db.delete(threads).run();
+  // Caption capability is a catalog flag now (M2b): GEMMA is audio-capable.
+  seedModel({ id: GEMMA, audioInput: true });
   setFastModel(GEMMA);
   invalidateSettingsCache();
 });

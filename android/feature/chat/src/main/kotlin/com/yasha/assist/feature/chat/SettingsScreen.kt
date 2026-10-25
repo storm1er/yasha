@@ -153,7 +153,7 @@ fun SettingsScreen(vm: SettingsViewModel, onBack: () -> Unit) {
             add("security" to R.string.tab_security)
             add("memory" to R.string.tab_memory)
             if (state.isAdmin) {
-                add("lemonade" to R.string.tab_lemonade)
+                add("backend" to R.string.tab_backend)
                 add("jobs" to R.string.tab_jobs)
             }
         }
@@ -184,7 +184,7 @@ fun SettingsScreen(vm: SettingsViewModel, onBack: () -> Unit) {
                     "general" -> GeneralTab(vm, state)
                     "security" -> SecurityTab(vm, state)
                     "memory" -> MemoryTab(vm, state)
-                    "lemonade" -> if (state.isAdmin) LemonadeTab(vm, state)
+                    "backend" -> if (state.isAdmin) LemonadeTab(vm, state)
                     "jobs" -> if (state.isAdmin) JobsTab(vm, state)
                 }
                 Spacer(Modifier.height(24.dp))
@@ -272,6 +272,7 @@ fun DropdownField(
     options: List<String>,
     placeholder: String,
     emptyLabel: String?,
+    display: ((String) -> String)? = null,
     onChange: (String) -> Unit,
 ) {
     val palette = LocalYashaPalette.current
@@ -287,7 +288,7 @@ fun DropdownField(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    value.ifEmpty { placeholder },
+                    (display?.invoke(value) ?: value).ifEmpty { placeholder },
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (value.isEmpty()) palette.iconGray else MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.weight(1f),
@@ -302,7 +303,7 @@ fun DropdownField(
                 }
                 current.forEach { id ->
                     DropdownMenuItem(
-                        text = { Text(id, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        text = { Text(display?.invoke(id) ?: id, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                         trailingIcon = { if (id == value) Icon(Icons.Default.Check, null, Modifier.size(18.dp)) },
                         onClick = { onChange(id); menu = false },
                     )
@@ -809,6 +810,7 @@ fun TaskEditor(
     models: List<String>,
     afterEachLabel: String,
     neverWarning: String,
+    display: ((String) -> String)? = null,
     onChange: ((TaskConfig) -> TaskConfig) -> Unit,
     onSave: () -> Unit,
 ) {
@@ -848,7 +850,7 @@ fun TaskEditor(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        cfg.model.ifEmpty { stringResource(R.string.task_model_hint) },
+                        cfg.model.let { display?.invoke(it) ?: it }.ifEmpty { stringResource(R.string.task_model_hint) },
                         style = MaterialTheme.typography.bodyMedium,
                         color = if (cfg.model.isEmpty()) palette.iconGray else MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.weight(1f),
@@ -860,7 +862,7 @@ fun TaskEditor(
                     DropdownMenuItem(text = { Text(stringResource(R.string.model_auto)) }, onClick = { onChange { it.copy(model = "") }; modelMenu = false })
                     models.forEach { m ->
                         DropdownMenuItem(
-                            text = { Text(m, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            text = { Text(display?.invoke(m) ?: m, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                             onClick = { onChange { it.copy(model = m) }; modelMenu = false },
                         )
                     }
@@ -989,14 +991,17 @@ private fun MemoryTab(vm: SettingsViewModel, state: SettingsUiState) {
         }
         SectionCard(stringResource(R.string.task_fact_title), stringResource(R.string.task_fact_intro)) {
             TaskEditor(state.factTask, state.chatCapableModels, stringResource(R.string.schedule_after_each), stringResource(R.string.task_fact_never),
+                display = { state.modelLabels[it] ?: it },
                 onChange = { vm.setTaskField("fact", it) }, onSave = { vm.saveTask("memory.events.fact_extraction", state.factTask) })
         }
         SectionCard(stringResource(R.string.task_summary_title), stringResource(R.string.task_summary_intro)) {
             TaskEditor(state.summaryTask, state.chatCapableModels, stringResource(R.string.schedule_after_each), stringResource(R.string.task_summary_never),
+                display = { state.modelLabels[it] ?: it },
                 onChange = { vm.setTaskField("summary", it) }, onSave = { vm.saveTask("memory.events.thread_summary", state.summaryTask) })
         }
         SectionCard(stringResource(R.string.task_dream_title), stringResource(R.string.task_dream_intro)) {
             TaskEditor(state.dreamTask, state.chatCapableModels, stringResource(R.string.schedule_after_each), stringResource(R.string.task_dream_never),
+                display = { state.modelLabels[it] ?: it },
                 onChange = { vm.setTaskField("dream", it) }, onSave = { vm.saveTask("memory.events.dreaming", state.dreamTask) })
         }
     }
@@ -1026,11 +1031,11 @@ private fun LemonadeTab(vm: SettingsViewModel, state: SettingsUiState) {
     SectionCard(stringResource(R.string.chat_models_title), stringResource(R.string.chat_models_intro)) {
         DropdownField(
             stringResource(R.string.fast_model), state.fastModel, state.chatCapableModels,
-            stringResource(R.string.model_pick), null,
+            stringResource(R.string.model_pick), null, display = { state.modelLabels[it] ?: it },
         ) { vm.setLemonadeField("fast", it) }
         DropdownField(
             stringResource(R.string.smart_model), state.smartModel, state.chatCapableModels,
-            stringResource(R.string.model_pick), stringResource(R.string.model_none),
+            stringResource(R.string.model_pick), stringResource(R.string.model_none), display = { state.modelLabels[it] ?: it },
         ) { vm.setLemonadeField("smart", it) }
         PillButton(stringResource(R.string.save)) { vm.saveChatModels() }
     }

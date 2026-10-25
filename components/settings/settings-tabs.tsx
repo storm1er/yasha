@@ -12,13 +12,13 @@ import { cn } from "@/lib/utils";
 
 const STORAGE_KEY = "yasha.settingsTab";
 
-type Tab = "general" | "security" | "memory" | "lemonade" | "jobs";
+type Tab = "general" | "security" | "memory" | "backend" | "jobs";
 
-const ADMIN_TABS: readonly Tab[] = ["lemonade", "jobs"];
+const ADMIN_TABS: readonly Tab[] = ["backend", "jobs"];
 
 function normalizeTab(raw: string | null): Tab | null {
-  if (raw === "admin") return "lemonade"; // legacy persisted value
-  return raw === "general" || raw === "security" || raw === "memory" || raw === "lemonade" || raw === "jobs"
+  if (raw === "admin" || raw === "lemonade") return "backend"; // legacy persisted values
+  return raw === "general" || raw === "security" || raw === "memory" || raw === "backend" || raw === "jobs"
     ? raw
     : null;
 }
@@ -102,13 +102,13 @@ export function SettingsTabs({ isAdmin }: { isAdmin: boolean }) {
             <button
               type="button"
               role="tab"
-              id="settings-tab-lemonade"
-              aria-selected={tab === "lemonade"}
-              data-testid="tab-lemonade"
-              className={tabClass(tab === "lemonade")}
-              onClick={() => select("lemonade")}
+              id="settings-tab-backend"
+              aria-selected={tab === "backend"}
+              data-testid="tab-backend"
+              className={tabClass(tab === "backend")}
+              onClick={() => select("backend")}
             >
-              {t("tabLemonade")}
+              {t("tabBackend")}
             </button>
             <button
               type="button"
@@ -124,7 +124,7 @@ export function SettingsTabs({ isAdmin }: { isAdmin: boolean }) {
           </>
         )}
       </div>
-      {tab === "lemonade" && isAdmin ? (
+      {tab === "backend" && isAdmin ? (
         <AdminPanel />
       ) : tab === "jobs" && isAdmin ? (
         <JobsPanel />

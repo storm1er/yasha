@@ -1,5 +1,5 @@
 // Runs in every test-file worker BEFORE app modules are imported (env vars are
-// read at module load by lib/db, lib/auth, lib/lemonade-stream).
+// read at module load by lib/db, lib/auth; provider seeding reads BACKEND_*).
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { afterEach, beforeEach, vi } from "vitest";
@@ -13,10 +13,12 @@ process.env.BETTER_AUTH_URL = "http://localhost:3000";
 process.env.BETTER_AUTH_TRUSTED_ORIGINS = "";
 process.env.BETTER_AUTH_SECRET = "integration-test-secret-not-a-real-one-0123456789";
 // Lemonade base points at an unroutable host; the fetch layer is stubbed in
-// beforeEach anyway, so no test can ever reach a real instance.
-process.env.LEMONADE_BASE_URL = "http://lemonade.invalid.test";
-delete process.env.LEMONADE_API_KEY;
-delete process.env.ADMIN_ALLOW_MUTATIONS;
+// beforeEach anyway, so no test can ever reach a real instance. Seeding at
+// ensureReady() turns these into the default provider row in every test DB.
+process.env.BACKEND_TYPE = "lemonade";
+process.env.BACKEND_BASE_URL = "http://lemonade.invalid.test";
+delete process.env.BACKEND_API_KEY;
+delete process.env.ADMIN_ALLOW_BACKEND_MUTATIONS;
 // Rate limiter off by default for suites; tests/rate-limit.test.ts re-enables
 // it per-test (env is read per request, not at import).
 process.env.YASHA_RATE_LIMIT = "off";

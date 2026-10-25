@@ -112,6 +112,50 @@ export const settings = sqliteTable("settings", {
   value: text("value").notNull(),
 });
 
+// ── Model providers (docs/provider-plan.md) ───────────────────────────────────
+// Env-seeded once (BACKEND_*), then the table is the source of truth (Q5).
+// `models` is a per-provider catalog cache (Q13): identity + admin capability
+// overrides; volatile state (loaded/downloaded) is always fetched live.
+
+export const PROVIDER_TYPES = ["lemonade", "openai_compatible"] as const;
+export type ProviderType = (typeof PROVIDER_TYPES)[number];
+
+export const providers = sqliteTable("providers", {
+  id: text("id").primaryKey(), // slug; part of canonical model ids (M2)
+  type: text("type").$type<ProviderType>().notNull(),
+  label: text("label").notNull(),
+  baseUrl: text("base_url").notNull(),
+  /** Secret: masked on every API read (mcp_servers.headers_json precedent). */
+  apiKey: text("api_key"),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  configJson: text("config_json"), // reserved, unused until a provider type needs extras
+  createdAt: ts("created_at").notNull(),
+  updatedAt: ts("updated_at").notNull(),
+});
+
+export const models = sqliteTable(
+  "models",
+  {
+    id: text("id").primaryKey(), // canonical `${providerId}:${remoteId}` (M2)
+    providerId: text("provider_id").notNull(),
+    remoteId: text("remote_id").notNull(),
+    displayName: text("display_name"),
+    /** null = from upstream/auto-seed; true/false = admin override (wins, Q14). */
+    vision: integer("vision", { mode: "boolean" }),
+    audioInput: integer("audio_input", { mode: "boolean" }),
+    contextWindow: integer("context_window"),
+    hidden: integer("hidden", { mode: "boolean" }).notNull().default(false),
+    lastSyncedAt: integer("last_synced_at", { mode: "timestamp_ms" }),
+  },
+  (t) => [
+    uniqueIndex("models_provider_remote_idx").on(t.providerId, t.remoteId),
+    foreignKey({
+      columns: [t.providerId],
+      foreignColumns: [providers.id],
+    }).onDelete("cascade"),
+  ]
+);
+
 // ── MCP servers (builtin ketch row + admin-registered global servers +
 //    user-owned servers, isolated per owner) ──────────────────────────────────
 
@@ -421,3 +465,5 @@ export type ApkBuild = typeof apkBuilds.$inferSelect;
 export type McpServer = typeof mcpServers.$inferSelect;
 export type ImportBatch = typeof importBatches.$inferSelect;
 export type ThreadImport = typeof threadImports.$inferSelect;
+export type Provider = typeof providers.$inferSelect;
+export type ModelRow = typeof models.$inferSelect;

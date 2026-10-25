@@ -30,8 +30,9 @@ unless you prefer anonymity.
 - Terminate TLS at your reverse proxy and set `BETTER_AUTH_URL` / `BETTER_AUTH_TRUSTED_ORIGINS`
   to the exact public origin (see [docs/admin-guide.md](docs/admin-guide.md)).
 - Keep `BETTER_AUTH_SECRET` secret and unique per instance; rotate it if leaked (sessions reset).
-- `ADMIN_ALLOW_MUTATIONS=false` disables admin actions that mutate the backend (model
-  pull/load/delete) — recommended on shared or remote Lemonade servers.
+- `ADMIN_ALLOW_BACKEND_MUTATIONS=false` disables admin actions that mutate the backend (model
+  pull/load/delete) — recommended on shared or remote Lemonade servers (OpenAI-compatible
+  providers have no control plane at all; those routes answer 501).
 - `auth.allowRegistration=false` (Settings → Security) closes self-service signup.
 - Remote MCP servers can be restricted (`mcp.userServersEnabled`,
   `MCP_ALLOW_PRIVATE_URLS`) — treat tool servers as part of your trust boundary.

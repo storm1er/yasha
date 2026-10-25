@@ -1,10 +1,12 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { GET as keysGet } from "@/app/api/api-keys/route";
 import { DELETE as threadDelete } from "@/app/api/threads/[id]/route";
-import { GET as statusRoute } from "@/app/api/lemonade/status/route";
+import { GET as statusRoute } from "@/app/api/backend/status/route";
 import { createKey, listKeys, resolveKeyOwner, revokeKey } from "@/lib/api-keys";
 import { userCount } from "@/lib/db";
-import { apiKeys, user as userTable } from "@/lib/db/schema";
+import { apiKeys, providers, user as userTable } from "@/lib/db/schema";
+import { seedProvidersFromEnv } from "@/lib/provider/registry";
+import { resetHealthProbes } from "@/lib/provider/health";
 import { adminUser, callRoute, jsonOf, type AdminUser } from "./support/app";
 import { db } from "./support/db";
 
@@ -136,13 +138,14 @@ describe("remaining single branches", () => {
     expect(res.status).toBe(404);
   });
 
-  it("lemonade status treats an absent LEMONADE_BASE_URL as unconfigured", async () => {
-    const saved = process.env.LEMONADE_BASE_URL;
-    delete process.env.LEMONADE_BASE_URL;
+  it("backend status treats an empty providers table as unconfigured", async () => {
+    db.delete(providers).run();
+    resetHealthProbes();
     try {
-      expect(await jsonOf(await callRoute(statusRoute, { cookie: admin.cookie }))).toEqual({ ok: false, url: null });
+      expect(await jsonOf(await callRoute(statusRoute, { cookie: admin.cookie }))).toEqual({ ok: false, providers: [] });
     } finally {
-      process.env.LEMONADE_BASE_URL = saved;
+      seedProvidersFromEnv();
+      resetHealthProbes();
     }
   });
 });

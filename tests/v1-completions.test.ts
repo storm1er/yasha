@@ -8,7 +8,7 @@ import { apiKeys } from "@/lib/db/schema";
 import { makeRequest, sessionId, signUp, waitFor, type TestUser } from "./support/app";
 import { bindStream, json, mockLemonade, modelsResponse, sseCompletion, streamResponse } from "./support/lemonade";
 import { createKey } from "@/lib/api-keys";
-import { hasInFlightGeneration, releaseGeneration } from "@/lib/lemonade-stream";
+import { hasInFlightGeneration, releaseGeneration } from "@/lib/provider/gate";
 
 let user: TestUser & { userId: string };
 let auth: string;
@@ -16,7 +16,7 @@ let auth: string;
 const CHAT = "/v1/chat/completions";
 
 function post(opts: Record<string, unknown> = {}, authorization = auth) {
-  return callV1({ json: { model: "fast-model.test", messages: [{ role: "user", content: "hi" }], ...opts } }, authorization);
+  return callV1({ json: { model: "default:fast-model.test", messages: [{ role: "user", content: "hi" }], ...opts } }, authorization);
 }
 
 async function callV1(opts: Parameters<typeof makeRequest>[0], authorization = auth) {
@@ -69,7 +69,7 @@ describe("v1 chat/completions auth + validation", () => {
 
   it("messages + model validation", async () => {
     for (const messages of [undefined, [], "x", [null], [{ noRole: 1 }], [{ role: 7 }]]) {
-      const res = await callV1({ json: { model: "fast-model.test", messages } });
+      const res = await callV1({ json: { model: "default:fast-model.test", messages } });
       expect(res.status, JSON.stringify(messages)).toBe(400);
     }
     let res = await callV1({ json: { messages: [{ role: "user", content: "x" }] } });
@@ -83,7 +83,7 @@ describe("v1 chat/completions auth + validation", () => {
     mock.route("/v1/models", () => new Response("x", { status: 503 }));
     let res = await post();
     expect(res.status).toBe(502);
-    expect(((await res.json()) as { error: { message: string } }).error.message).toContain("Lemonade");
+    expect(((await res.json()) as { error: { message: string } }).error.message).toContain("Upstream request failed");
     mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
     res = await post({ model: "ghost-model" });
@@ -94,7 +94,7 @@ describe("v1 chat/completions auth + validation", () => {
   it("429 when a generation is already in flight", async () => {
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
-    const { tryAcquireGeneration } = await import("@/lib/lemonade-stream");
+    const { tryAcquireGeneration } = await import("@/lib/provider/gate");
     tryAcquireGeneration(user.userId);
     const res = await post();
     expect(res.status).toBe(429);
@@ -123,7 +123,7 @@ describe("v1 non-streaming", () => {
     const res = await post({ stream: false, max_tokens: 5000 });
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body.model).toBe("fast-model.test");
+    expect(body.model).toBe("default:fast-model.test");
     expect(JSON.stringify(body)).not.toMatch(/reasoning/i);
     const sent = JSON.parse(mock.lastCall(CHAT)!.body!) as Record<string, unknown>;
     expect(sent.max_tokens).toBe(1024); // capped at api.maxTokensCap
@@ -192,7 +192,7 @@ describe("v1 upstream connect failures", () => {
       method: "POST",
       path: "/v1/chat/completions",
       headers: { authorization: auth },
-      json: { model: "fast-model.test", messages: [{ role: "user", content: "hi" }] },
+      json: { model: "default:fast-model.test", messages: [{ role: "user", content: "hi" }] },
       signal: ac.signal,
     });
     const resPromise = v1Chat.POST(req as never);
@@ -225,7 +225,7 @@ describe("v1 streaming", () => {
     const text = await res.text();
     expect(text).toContain('"content":"Hel"');
     expect(text).not.toMatch(/reasoning/i);
-    expect(text).toContain('"model":"fast-model.test"');
+    expect(text).toContain('"model":"default:fast-model.test"');
     expect(text.trimEnd().endsWith("data: [DONE]")).toBe(true);
     expect(text).toContain("[42,\"arr\"]"); // array payload forwarded verbatim (no model rewrite)
   });
@@ -288,7 +288,7 @@ describe("v1 streaming", () => {
       method: "POST",
       path: "/v1/chat/completions",
       headers: { authorization: auth },
-      json: { model: "fast-model.test", messages: [{ role: "user", content: "hi" }], stream: true },
+      json: { model: "default:fast-model.test", messages: [{ role: "user", content: "hi" }], stream: true },
       signal: ac.signal,
     });
     const res = await v1Chat.POST(req as never);
