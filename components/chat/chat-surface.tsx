@@ -728,7 +728,7 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
       className="text-[13px] leading-snug text-amber-600 dark:text-amber-400"
     >
       {t("noModelConfigured")}{" "}
-      <Link href="/settings" className="underline underline-offset-2">
+      <Link href="/settings?tab=backend" className="underline underline-offset-2">
         {tc("settings")}
       </Link>
     </p>

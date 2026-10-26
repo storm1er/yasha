@@ -55,7 +55,7 @@ docker compose run --rm yasha sh -c 'npx tsc --noEmit && npm run lint && npx vit
   guards a real hazard, make it testable instead.
 - **Happy path verified interactively** (Playwright for web, emulator/device for the Android app).
 
-Test isolation is strict (throwaway SQLite per test worker, all Lemonade calls mocked — see
+Test isolation is strict (throwaway SQLite per test worker, all upstream backend calls mocked — see
 `tests/support/`); don't weaken it. `AGENTS.md` documents the harness helpers and gotchas.
 
 Android app: `cd android && docker compose run --rm gradle test lint assembleDebug`.

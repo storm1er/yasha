@@ -89,7 +89,7 @@ COPY package.json package-lock.json ./
 RUN ok=0; for i in 1 2 3 4 5; do npm ci && { ok=1; break; }; sleep 5; done; [ "$ok" = 1 ]
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1 \
-    LEMONADE_BASE_URL=http://localhost:13305 \
+    BACKEND_BASE_URL=http://localhost:13305 \
     BETTER_AUTH_SECRET=build-time-only-not-a-real-secret-0000000000 \
     BETTER_AUTH_URL=http://localhost
 # Placeholders above only satisfy module-level env validation during

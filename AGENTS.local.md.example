@@ -19,13 +19,14 @@ working on this repo should, on first run, walk this list with the developer and
 ## Deployment / URLs
 - Stack URL used for QA (desktop and/or phone): `<http(s)://host:port>`
   <!-- Must be reachable from the phone if you do device QA (LAN IP or public dev host). -->
-- Lemonade topology (see AGENTS.md §First stack setup):
-  - [ ] Bundled (`LEMONADE_BASE_URL=http://lemonade:13305`)
-  - [ ] External: `LEMONADE_BASE_URL=<url>` with `lemonade.deploy.replicas: 0` in
-        `compose.override.yml`
-- Is that Lemonade reachable from the agent/container network? `<yes/no — if no, verify backend
-  health through the app (/api/health, /api/lemonade/status, UI badge), never raw curl>`
-- `ADMIN_ALLOW_MUTATIONS` in `.env`: `<true/false>` (false = never attempt mutating Lemonade calls)
+- Backend topology (see AGENTS.md §First stack setup; extra providers live in Settings → Backend):
+  - [ ] Bundled Lemonade (`BACKEND_BASE_URL=http://lemonade:13305`)
+  - [ ] External: `BACKEND_BASE_URL=<url>` (+ `BACKEND_TYPE` if not lemonade) with
+        `lemonade.deploy.replicas: 0` in `compose.override.yml`
+- Is that backend reachable from the agent/container network? `<yes/no — if no, verify backend
+  health through the app (/api/health, /api/backend/status, UI badge), never raw curl>`
+- `ADMIN_ALLOW_BACKEND_MUTATIONS` in `.env`: `<true/false>` (false = never attempt mutating
+  backend calls)
 - Ports in use on this host (avoid conflicts): `<e.g. 80, 443, 3000, 13305>`
 
 ### Available users

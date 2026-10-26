@@ -41,7 +41,7 @@ jobs:
           NEXT_TELEMETRY_DISABLED: "1"
           BETTER_AUTH_SECRET: ci-onl…cdef
           BETTER_AUTH_URL: http://localhost
-          LEMONADE_BASE_URL: http://localhost:13305
+          BACKEND_BASE_URL: http://localhost:13305
 
   docker:
     # Smoke-build the production image (no push) so the runtime path stays green.

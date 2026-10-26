@@ -118,7 +118,7 @@ describe("lib/settings typed getters", () => {
 
 describe("resolveEventConfig / defaultEventConfig", () => {
   beforeAll(() => {
-    setFastModel(); // "fast-model.test"
+    setFastModel(); // "default:fast-model.test"
     setSetting("memory.queue.defaultMaxAttempts", "5");
     setSetting("memory.queue.defaultBackoffMs", "9000");
   });
@@ -128,7 +128,7 @@ describe("resolveEventConfig / defaultEventConfig", () => {
       schedule: "after_persist",
       idleMinutes: 30,
       cronExpr: "0 4 * * *",
-      model: "fast-model.test",
+      model: "default:fast-model.test",
       timeoutMs: 10000,
       maxAttempts: 5,
       backoffMs: 9000,
@@ -146,7 +146,7 @@ describe("resolveEventConfig / defaultEventConfig", () => {
   it("falls back to defaults on broken rows", () => {
     for (const bad of ["{bad json", "42", "[1,2]", ""]) {
       setSetting("chat.title_generation", bad);
-      expect(resolveEventConfig("chat.title_generation").model).toBe("fast-model.test");
+      expect(resolveEventConfig("chat.title_generation").model).toBe("default:fast-model.test");
     }
   });
 
@@ -168,7 +168,7 @@ describe("resolveEventConfig / defaultEventConfig", () => {
       schedule: "after_persist", // invalid -> default
       idleMinutes: 1440,
       cronExpr: "a",
-      model: "fast-model.test", // non-string -> default
+      model: "default:fast-model.test", // non-string -> default
       timeoutMs: 1000,
       maxAttempts: 10,
       backoffMs: 3_600_000,
@@ -236,7 +236,7 @@ describe("jobTypeAllowed — memory switch ON gate matrix", () => {
     setSetting("fast_model", ""); // no model configured
     invalidateSettingsCache();
     expect(jobTypeAllowed("chat.title_generation")).toBe(false);
-    setFastModel(); // "fast-model.test"
+    setFastModel(); // "default:fast-model.test"
     expect(jobTypeAllowed("chat.title_generation")).toBe(true);
     setSetting("chat.title_generation", JSON.stringify({ schedule: "never" }));
     expect(jobTypeAllowed("chat.title_generation")).toBe(false);

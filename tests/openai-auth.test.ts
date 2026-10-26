@@ -115,8 +115,8 @@ describe("GET /v1/models", () => {
     expect(await jsonOf(res)).toEqual({
       object: "list",
       data: [
-        { id: "m1", object: "model", created: 0, owned_by: "lemonade" },
-        { id: "openrouter.free", object: "model", created: 0, owned_by: "openrouter" },
+        { id: "default:m1", object: "model", created: 0, owned_by: "default" },
+        { id: "default:openrouter.free", object: "model", created: 0, owned_by: "default" },
       ],
     });
   });

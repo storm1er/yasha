@@ -13,8 +13,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { isChatCapable } from "@/lib/chat-models-filter";
-import { ModelSelect } from "@/components/settings/model-select";
+import { fetchModelOptions, ModelSelect, type ModelOption } from "@/components/settings/model-select";
 import { msToSeconds, secondsToMs } from "@/lib/ms-seconds";
 
 type Schedule = "after_persist" | "idle" | "cron" | "never";
@@ -29,7 +28,7 @@ type EventConfig = {
   enabled?: boolean;
 };
 
-type ModelOption = { id: string | null; downloaded: boolean; labels: string[] };
+
 
 const SCHEDULES: Schedule[] = ["after_persist", "idle", "cron", "never"];
 
@@ -65,15 +64,15 @@ export function JobTaskCard({
   const [maxAttempts, setMaxAttempts] = useState("3");
   const [enabled, setEnabled] = useState(true);
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
-  const [modelOptions, setModelOptions] = useState<string[]>([]);
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
 
   useEffect(() => {
     let alive = true;
     void (async () => {
       try {
-        const [settingsRes, modelsRes] = await Promise.all([
+        const [settingsRes, modelIds] = await Promise.all([
           fetch("/api/admin/settings", { cache: "no-store" }),
-          fetch("/api/admin/models", { cache: "no-store" }),
+          fetchModelOptions(),
         ]);
         if (!alive) return;
         if (settingsRes.ok) {
@@ -90,16 +89,7 @@ export function JobTaskCard({
             if (typeof c.enabled === "boolean") setEnabled(c.enabled);
           }
         }
-        if (modelsRes.ok) {
-          const data = (await modelsRes.json()) as { models?: unknown };
-          const ids = Array.isArray(data.models)
-            ? (data.models as ModelOption[])
-                .filter((m) => isChatCapable(m))
-                .map((m) => m.id as string)
-                .sort((a, b) => a.localeCompare(b))
-            : [];
-          setModelOptions(ids);
-        }
+        setModelOptions(modelIds);
       } catch {
         /* keep defaults / empty datalist */
       }

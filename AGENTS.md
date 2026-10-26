@@ -27,27 +27,39 @@ the resulting topology in `AGENTS.local.md`:
    ports — everything else is an opt-in block of the override), then ask the developer which
    backend topology they use:
    - **Bundled Lemonade**: uncomment `services.lemonade.deploy.replicas: 1` in the override;
-     `LEMONADE_BASE_URL=http://lemonade:13305` (.env default); publish `13305` only if they want
+     `BACKEND_BASE_URL=http://lemonade:13305` (.env default); publish `13305` only if they want
      direct access from the host.
-   - **External Lemonade / proxy of their own**: set `LEMONADE_BASE_URL` to their URL in `.env`;
-     the bundled service stays at its default `replicas: 0` — never enable it.
+   - **External backend (Lemonade or any OpenAI-compatible server) / proxy of their own**: set
+     `BACKEND_BASE_URL` (and `BACKEND_TYPE` if not lemonade) to their URL in `.env`; the bundled
+     service stays at its default `replicas: 0` — never enable it. Extra providers are registered
+     at runtime in Settings → Backend, not via env.
 2. Required in `.env`: `BETTER_AUTH_SECRET` (never a placeholder), `BETTER_AUTH_URL` +
    `BETTER_AUTH_TRUSTED_ORIGINS` matching the URL the developer will actually browse, and
    `BOOTSTRAP_ADMIN_*` for first boot (the only automatic way to get the first admin — plain
    signups get role `user`).
 3. **An external Lemonade may be unreachable from the agent's network** (private host, allowlist,
    no DNS from containers). Never conclude "backend is down" from a failing `curl`: verify through
-   the app itself (`/api/health`, `/api/lemonade/status`, the UI health badge) and ask the
+   the app itself (`/api/health`, `/api/backend/status`, the UI health badge) and ask the
    developer. Record reachability in `AGENTS.local.md`.
 
 ## Identity
-**Yasha** (Yet Another Self Hosted Assistant): Gemini-style multi-user chat UI on top of a
-Lemonade server.
+**Yasha** (Yet Another Self Hosted Assistant): Gemini-style multi-user chat UI on top of admin-
+managed model backends — Lemonade (flagship) plus any OpenAI-compatible provider.
 
 ## Hard rules (violation = stop and report, do not "work around")
-1. **Lemonade**: base URL comes from `LEMONADE_BASE_URL` (see `.env` / `AGENTS.local.md`).
-   - Allowed endpoints: `POST /v1/chat/completions`, `POST /v1/audio/transcriptions | /v1/audio/speech`, `WS GET /v1/realtime`, `GET /v1/models | /v1/health | /v1/stats | /v1/system-info | /v1/system-stats | /v1/registry/search | /v1/pull/variants | /v1/models/{id}/options`.
-   - **Never execute mutating Lemonade calls** (`POST /v1/pull|load|unload|delete|install|uninstall`, `/v1/downloads/control`, alias writes, cloud auth) unless `ADMIN_ALLOW_MUTATIONS=true` is set locally in `.env`. Ignore `.env.example` value
+1. **Backends (providers)**: connection info lives in the `providers` table, seeded from
+   `BACKEND_TYPE`/`BACKEND_BASE_URL`/`BACKEND_API_KEY` only while the table is empty (see `.env` /
+   `AGENTS.local.md`). Per-type endpoint policy (`lib/provider/adapters.ts`):
+   - `lemonade` (flagship): data plane `POST /v1/chat/completions`,
+     `POST /v1/audio/transcriptions | /v1/audio/speech`, `WS GET /v1/realtime`; control-plane GETs
+     `/v1/models | /v1/health | /v1/stats | /v1/system-info | /v1/system-stats | /v1/registry/search |
+     /v1/pull/variants | /v1/models/{id}/options`. **Never execute mutating calls**
+     (`POST /v1/pull|load|unload|delete|install|uninstall`, `/v1/downloads/control`, alias writes,
+     cloud auth) unless `ADMIN_ALLOW_BACKEND_MUTATIONS=true` is set locally in `.env`. Ignore
+     `.env.example` value.
+   - `openai_compatible`: **only** `GET /v1/models` (probe/catalog sync) + `POST /v1/chat/completions`.
+     No control plane, no audio/realtime probing — capabilities stay false until an admin flags them
+     in the synced catalog (Settings → Backend).
    - Quirk: responses may carry `reasoning`/`reasoning_details` fields. **Render & persist only `message.content` / `delta.content`; ignore reasoning deltas.**
 2. **Containers only.** Host node/npm are off-limits. Run tools via `docker|podman compose run --rm <service> <cmd>`;
    Allowed host tools: git, curl, docker|podman, adb, python3.
@@ -88,7 +100,7 @@ The suite lives in `tests/` and runs **inside the yasha image** (host has no nod
 
 Isolation & safety (set up by `tests/support/setup.ts`, do not weaken it):
 - every test-file worker gets a **throwaway SQLite db** (`$YASHA_TEST_DB_DIR`/tmp, random name) — the real `./data/yasha.db` is never touched;
-- `LEMONADE_BASE_URL` points at an unroutable host and **fetch is guarded**: an un-mocked Lemonade call fails the test. All Lemonade traffic goes through `mockLemonade()`.
+- `BACKEND_BASE_URL` points at an unroutable host and **fetch is guarded**: an un-mocked upstream call fails the test. All provider traffic (both types) goes through `mockLemonade()` — legacy name, it is a global fetch route table (`route` matcher per URL, first match wins).
 - `NEXT_PHASE=phase-production-build` by default → the queue worker never self-starts (build guard);
   enqueued job rows stay visible for assertions. Worker tests `delete process.env.NEXT_PHASE` in
   `beforeEach` (restore after). The Settings→Memory checkbox (`memory.enabled`) is the sole admin

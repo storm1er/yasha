@@ -7,7 +7,7 @@ import { getAuthedUserId } from "@/lib/api-auth";
 import { db, ensureReady } from "@/lib/db";
 import { messages, threads } from "@/lib/db/schema";
 import { resolveEventConfig, smartModel } from "@/lib/settings";
-import { isAudioInputModel } from "@/lib/audio-input";
+import { ensureCatalog, isAudioInputModel } from "@/lib/provider/catalog";
 import { parseStoredAudio } from "@/lib/chat-attachments";
 import { enqueueJob } from "@/lib/jobs/queue";
 import { rateLimit } from "@/lib/rate-limit";
@@ -36,6 +36,7 @@ export async function POST(req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: "no_audio" }, { status: 400 });
   }
 
+  await ensureCatalog(); // caption capability comes from the synced rows
   const cfg = resolveEventConfig("chat.audio_transcription");
   const smart = smartModel();
   if (!cfg.enabled || cfg.schedule === "never" || !cfg.model || !isAudioInputModel(cfg.model) || cfg.model === smart) {

@@ -8,7 +8,7 @@ import { memories } from "@/lib/db/schema";
 import { makeRequest, sessionId, signUp, type TestUser } from "./support/app";
 import { json, mockLemonade, modelsResponse, sseCompletion, type LemonadeMock } from "./support/lemonade";
 import { createKey } from "@/lib/api-keys";
-import { releaseGeneration } from "@/lib/lemonade-stream";
+import { releaseGeneration } from "@/lib/provider/gate";
 import { setUserMemoryEnabled } from "@/lib/memory/prefs";
 import { setUserMcpEnabled } from "@/lib/mcp/prefs";
 
@@ -47,7 +47,7 @@ function jsonToolCalls(name: string, args = "{}"): Response {
 
 function post(jsonBody: Record<string, unknown>, authorization = auth) {
   // fresh model id per request batch avoids cross-test no-tool-support memo bleed
-  const model = jsonBody.model ?? `v1-model-${modelSeq}.test`;
+  const model = jsonBody.model ?? `default:v1-model-${modelSeq}.test`; // canonical request id
   const req = makeRequest({
     method: "POST",
     path: "/v1/chat/completions",

@@ -44,7 +44,7 @@ services:
     # service stays at replicas: 0 and the app retries backend health on its own.
 
   # Bundled LLM backend — OFF by default. Enable + GPU setup (NVIDIA/AMD) and
-  # LEMONADE_BASE_URL in .env: see compose.override.yml.example. It stays on
+  # BACKEND_BASE_URL in .env: see compose.override.yml.example. It stays on
   # the internal network (never published) unless you opt in to exposing it.
   lemonade:
     image: ghcr.io/lemonade-sdk/lemonade-server:latest

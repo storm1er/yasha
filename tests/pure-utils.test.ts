@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { relativeTime } from "@/lib/relative-time";
 import { msToSeconds, secondsToMs } from "@/lib/ms-seconds";
-import { isChatCapable } from "@/lib/chat-models-filter";
 
 const NOW = Date.parse("2026-03-15T12:00:00.000Z");
 const MIN = 60_000;
@@ -83,23 +82,5 @@ describe("secondsToMs", () => {
 
   it("floors sub-millisecond positives to zero -> null", () => {
     expect(secondsToMs("0.0004")).toBeNull();
-  });
-});
-
-describe("isChatCapable", () => {
-  it("rejects missing ids and non-array labels", () => {
-    expect(isChatCapable({})).toBe(false);
-    expect(isChatCapable({ id: "" })).toBe(false);
-    expect(isChatCapable({ id: "x", labels: "chat" as unknown as string[] })).toBe(false);
-  });
-
-  it("requires the chat label", () => {
-    expect(isChatCapable({ id: "x", downloaded: true, labels: ["embedding"] })).toBe(false);
-  });
-
-  it("accepts downloaded chat models and openrouter passthroughs", () => {
-    expect(isChatCapable({ id: "a", downloaded: true, labels: ["chat"] })).toBe(true);
-    expect(isChatCapable({ id: "openrouter.free", downloaded: false, labels: ["chat"] })).toBe(true);
-    expect(isChatCapable({ id: "b", downloaded: false, labels: ["chat"] })).toBe(false);
   });
 });

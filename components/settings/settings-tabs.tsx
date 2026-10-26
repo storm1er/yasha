@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { AdminPanel } from "@/components/settings/admin-panel";
 import { GeneralPanel } from "@/components/settings/general-panel";
@@ -11,25 +12,38 @@ import { cn } from "@/lib/utils";
 
 const STORAGE_KEY = "yasha.settingsTab";
 
-type Tab = "general" | "security" | "memory" | "lemonade" | "jobs";
+type Tab = "general" | "security" | "memory" | "backend" | "jobs";
+
+const ADMIN_TABS: readonly Tab[] = ["backend", "jobs"];
+
+function normalizeTab(raw: string | null): Tab | null {
+  if (raw === "admin" || raw === "lemonade") return "backend"; // legacy persisted values
+  return raw === "general" || raw === "security" || raw === "memory" || raw === "backend" || raw === "jobs"
+    ? raw
+    : null;
+}
 
 export function SettingsTabs({ isAdmin }: { isAdmin: boolean }) {
   const t = useTranslations("settings");
+  const searchParams = useSearchParams();
   const [tab, setTab] = useState<Tab>("general");
 
   useEffect(() => {
     const id = window.setTimeout(() => {
       try {
-        let saved = window.localStorage.getItem(STORAGE_KEY);
-        if (saved === "admin") saved = "lemonade";
-        if (saved === "memory" || saved === "security") setTab(saved);
-        else if (isAdmin && (saved === "lemonade" || saved === "jobs")) setTab(saved);
+        const isAvailable = (next: Tab) => !ADMIN_TABS.includes(next) || isAdmin;
+        // An explicit ?tab= deep link wins over the persisted tab; a tab the
+        // role cannot use (or an unknown value) falls back to the persisted one.
+        const deepLink = normalizeTab(searchParams.get("tab"));
+        const saved = normalizeTab(window.localStorage.getItem(STORAGE_KEY));
+        const next = deepLink && isAvailable(deepLink) ? deepLink : saved && isAvailable(saved) ? saved : null;
+        if (next) setTab(next);
       } catch {
         /* storage unavailable */
       }
     }, 0);
     return () => window.clearTimeout(id);
-  }, [isAdmin]);
+  }, [isAdmin, searchParams]);
 
   function select(next: Tab) {
     setTab(next);
@@ -88,13 +102,13 @@ export function SettingsTabs({ isAdmin }: { isAdmin: boolean }) {
             <button
               type="button"
               role="tab"
-              id="settings-tab-lemonade"
-              aria-selected={tab === "lemonade"}
-              data-testid="tab-lemonade"
-              className={tabClass(tab === "lemonade")}
-              onClick={() => select("lemonade")}
+              id="settings-tab-backend"
+              aria-selected={tab === "backend"}
+              data-testid="tab-backend"
+              className={tabClass(tab === "backend")}
+              onClick={() => select("backend")}
             >
-              {t("tabLemonade")}
+              {t("tabBackend")}
             </button>
             <button
               type="button"
@@ -110,7 +124,7 @@ export function SettingsTabs({ isAdmin }: { isAdmin: boolean }) {
           </>
         )}
       </div>
-      {tab === "lemonade" && isAdmin ? (
+      {tab === "backend" && isAdmin ? (
         <AdminPanel />
       ) : tab === "jobs" && isAdmin ? (
         <JobsPanel />

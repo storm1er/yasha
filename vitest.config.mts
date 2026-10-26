@@ -5,7 +5,7 @@ const root = fileURLToPath(new URL("./", import.meta.url));
 
 // Integration tests only (no browser): real route handlers + real better-auth +
 // real drizzle/SQLite (per-file throwaway DB via DATABASE_PATH in setup.ts) +
-// global fetch stubbed so Lemonade is NEVER reached.
+// global fetch stubbed so any model backend is NEVER reached.
 export default defineConfig({
   resolve: {
     alias: [

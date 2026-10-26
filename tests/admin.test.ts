@@ -26,11 +26,11 @@ function optsCtx(id: string) {
 }
 
 async function withMutationFlag<T>(fn: () => Promise<T>): Promise<T> {
-  process.env.ADMIN_ALLOW_MUTATIONS = "true";
+  process.env.ADMIN_ALLOW_BACKEND_MUTATIONS = "true";
   try {
     return await fn();
   } finally {
-    delete process.env.ADMIN_ALLOW_MUTATIONS;
+    delete process.env.ADMIN_ALLOW_BACKEND_MUTATIONS;
   }
 }
 
@@ -47,7 +47,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  delete process.env.ADMIN_ALLOW_MUTATIONS;
+  delete process.env.ADMIN_ALLOW_BACKEND_MUTATIONS;
 });
 
 describe("admin guard (requireAdmin)", () => {
@@ -735,24 +735,28 @@ describe("admin model options POST", () => {
   });
 });
 
-describe("lib/lemonade-admin helpers", () => {
-  it("getJson: success carries Authorization header when LEMONADE_API_KEY is set", async () => {
-    const lib = await import("@/lib/lemonade-admin");
-    process.env.LEMONADE_API_KEY = "secret-key";
-    try {
-      const mock = mockLemonade();
-      mock.route("/v1/health", () => json({ status: "ok" }));
-      await expect(lib.health()).resolves.toEqual({ status: "ok" });
-      expect(mock.lastCall()!.headers.authorization).toBe("Bearer secret-key");
-      mock.route("/v1/stats", () => json({ total_requests: 1 }));
-      await expect(lib.stats()).resolves.toEqual({ total_requests: 1 });
-    } finally {
-      delete process.env.LEMONADE_API_KEY;
-    }
+describe("lib/provider/lemonade adapter", () => {
+  const KEYED_URL = "http://lemonade.invalid.test";
+  const keyed = () => import("@/lib/provider/lemonade").then((m) => new m.LemonadeProvider("p1", KEYED_URL, "secret-key"));
+  const keyless = () => import("@/lib/provider/lemonade").then((m) => new m.LemonadeProvider("p0", KEYED_URL, null));
+
+  it("getJson: success carries Authorization header when the provider row has a key", async () => {
+    const lib = await keyed();
+    const mock = mockLemonade();
+    mock.route("/v1/health", () => json({ status: "ok" }));
+    await expect(lib.health()).resolves.toEqual({ status: "ok" });
+    expect(mock.lastCall()!.headers.authorization).toBe("Bearer secret-key");
+    mock.route("/v1/stats", () => json({ total_requests: 1 }));
+    await expect(lib.stats()).resolves.toEqual({ total_requests: 1 });
+
+    const plain = await keyless();
+    mock.route("/v1/system-info", () => json({ cpus: 2 }));
+    await plain.systemInfo();
+    expect(mock.lastCall()!.headers.authorization).toBeUndefined();
   });
 
   it("getJson: non-2xx throws upstream_status_*", async () => {
-    const lib = await import("@/lib/lemonade-admin");
+    const lib = await keyed();
     const mock = mockLemonade();
     mock.fallback(() => new Response("x", { status: 404 }));
     await expect(lib.systemInfo()).rejects.toThrow("upstream_status_404");
@@ -768,7 +772,7 @@ describe("lib/lemonade-admin helpers", () => {
   });
 
   it("loadedModels: array passthrough vs non-array → []", async () => {
-    const lib = await import("@/lib/lemonade-admin");
+    const lib = await keyed();
     let mock = mockLemonade();
     mock.route("/v1/health", () => json({ all_models_loaded: [{ model_name: "m" }] }));
     await expect(lib.loadedModels()).resolves.toEqual([{ model_name: "m" }]);
@@ -778,19 +782,20 @@ describe("lib/lemonade-admin helpers", () => {
   });
 
   it("mutating helpers refuse without the flag", async () => {
-    const lib = await import("@/lib/lemonade-admin");
-    expect(lib.mutationsEnabled()).toBe(false);
+    const lib = await keyed();
+    const m = await import("@/lib/provider/lemonade");
+    expect(m.backendMutationsEnabled()).toBe(false);
     await expect(lib.pull("m")).rejects.toThrow("mutations_disabled:pull");
     await expect(lib.load("m")).rejects.toThrow("mutations_disabled:load");
     await expect(lib.unload("m")).rejects.toThrow("mutations_disabled:unload");
     await expect(lib.del("m")).rejects.toThrow("mutations_disabled:delete");
     await expect(lib.setModelOptions("m", {})).rejects.toThrow("mutations_disabled:set_model_options");
-    await expect(lib.pinModel("m", true)).rejects.toThrow("mutations_disabled:pin_model");
+    await expect(lib.pin("m", true)).rejects.toThrow("mutations_disabled:pin_model");
     await expect(lib.downloadsControl("d", "pause")).rejects.toThrow("mutations_disabled:downloads_control_pause");
   });
 
   it("postJson body handling with the flag on", async () => {
-    const lib = await import("@/lib/lemonade-admin");
+    const lib = await keyed();
     await withMutationFlag(async () => {
       let mock = mockLemonade();
       mock.route("/v1/load", () => new Response("plain text ack", { status: 200, headers: { "content-type": "text/plain" } }));
@@ -818,7 +823,7 @@ describe("lib/lemonade-admin helpers", () => {
 
       mock = mockLemonade();
       mock.route("/internal/pin", () => json({ ok: 1 }));
-      await expect(lib.pinModel("m", false)).resolves.toEqual({ ok: 1 });
+      await expect(lib.pin("m", false)).resolves.toEqual({ ok: 1 });
 
       mock = mockLemonade();
       mock.route("/v1/downloads/control", () => json({ status: "ok" }));

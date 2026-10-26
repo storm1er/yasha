@@ -19,13 +19,19 @@ Two layers configure Yasha:
 | `BETTER_AUTH_URL` | — | Canonical app URL, no trailing slash (e.g. `https://yasha.example.com`). |
 | `BETTER_AUTH_TRUSTED_ORIGINS` | — | Comma-separated origins allowed to call auth endpoints. Must include every origin users browse from (proxy, LAN IP). |
 
-### Lemonade backend
+### Backend (model providers)
+
+Providers live in the `providers` table — admins manage them in **Settings → Backend**
+(add/remove any Lemonade or OpenAI-compatible server, enable/disable, API keys). The env
+vars below only **seed the initial `default` provider on first boot, while the table is
+empty**; after that the table is the source of truth and these vars are inert.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `LEMONADE_BASE_URL` | `http://lemonade:13305` | Base URL of the Lemonade server. The bundled container ships at `replicas: 0` (enable it in `compose.override.yml`); point this at your own instance otherwise. |
-| `LEMONADE_API_KEY` | empty | Optional Bearer token if your Lemonade requires one. |
-| `ADMIN_ALLOW_MUTATIONS` | `true` | Gate for admin-only **mutating** Lemonade calls (pull/load/unload/delete) in `/api/admin/actions`. Set `false` for shared/remote backends — routes answer `503 mutations_disabled`. |
+| `BACKEND_TYPE` | `lemonade` | Provider type to seed: `lemonade` or `openai_compatible`. |
+| `BACKEND_BASE_URL` | `http://lemonade:13305` | Base URL of the backend to seed. The bundled Lemonade container ships at `replicas: 0` (enable it in `compose.override.yml`); point this at your own instance otherwise. |
+| `BACKEND_API_KEY` | empty | Optional Bearer token for the seeded provider. |
+| `ADMIN_ALLOW_BACKEND_MUTATIONS` | `true` | Gate for admin-only **mutating** control-plane calls (pull/load/unload/delete) against Lemonade providers in `/api/admin/actions`. Set `false` for shared/remote backends — routes answer `503 mutations_disabled`. |
 
 ### First boot
 
@@ -92,5 +98,7 @@ Internal (do not set): `NEXT_PHASE`, `NEXT_RUNTIME`, `GRADLE_USER_HOME`.
 ## Settings keys (admin UI)
 
 Runtime settings are keyed in the `settings` table (`lib/settings.ts`) — namespaces: `fast_model`,
-`chat.*`, `api.*`, `memory.*`, `mcp.*`, `import.*`, `auth.allowRegistration`, `debug.echo`. They
-are documented in-place in the admin UI; env vars always win for deployment-level concerns.
+`smart_model`, `chat.*`, `api.*`, `memory.*`, `mcp.*`, `import.*`, `auth.allowRegistration`, `debug.echo`.
+`fast_model`/`smart_model` (and thread model pins) hold **canonical `provider:remote` ids** from the
+synced catalog, e.g. `default:gemma-3n-e4b-it`. They are documented in-place in the admin UI; env
+vars always win for deployment-level concerns.

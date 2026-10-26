@@ -296,13 +296,14 @@ private fun ModelPicker(vm: ChatViewModel, state: ChatUiState) {
     if (state.models.isEmpty()) return
     val fastLabel = stringResource(R.string.model_fast)
     val smartLabel = stringResource(R.string.model_smart)
-    // Same display as the web picker: only the fast/smart role label is shown.
+    // Same display as the web picker: model name + fast/smart role hint (Q4).
     fun label(id: String?): String {
         val m = state.models.find { it.id == id } ?: return id.orEmpty()
+        val base = m.name?.takeIf { it.isNotEmpty() } ?: m.id
         return when (m.label) {
-            "fast" -> fastLabel
-            "smart" -> smartLabel
-            else -> m.id
+            "fast" -> "$base · $fastLabel"
+            "smart" -> "$base · $smartLabel"
+            else -> base
         }
     }
     val current = state.pickedModel ?: state.defaultModel
