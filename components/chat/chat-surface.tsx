@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Check, ChevronDown, Copy, Loader2, Menu, RefreshCw, X } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, Copy, Loader2, Menu, RefreshCw, X } from "lucide-react";
 import { Sparkle } from "@/components/brand/sparkle";
 import { useChatShell } from "@/components/chat/chat-shell";
 import { CodeBlock } from "@/components/chat/code-block";
@@ -23,6 +23,8 @@ type ToolChip = {
   args?: string;
   /** Tool output (or error text) — present on terminal states. */
   result?: string;
+  /** Result was cut at the server-side cap → amber warn chip (issue #8). */
+  truncated?: boolean;
 };
 
 /** Ordered rendering segment of an assistant turn (issue #7): tool chips
@@ -132,6 +134,7 @@ function mapMessage(m: ServerMessage): ChatMessage {
         status: t.ok ? ("done" as const) : ("error" as const),
         args: typeof t.args === "string" ? t.args : undefined,
         result: typeof t.result === "string" ? t.result : undefined,
+        truncated: t.truncated === true ? true : undefined,
       }))
     : undefined;
   return {
@@ -207,14 +210,20 @@ function ToolChipView({ tool, label }: { tool: ToolChip; label: string }) {
   const t = useTranslations("chat");
   const [open, setOpen] = useState(false);
   const expandable = typeof tool.args === "string" || typeof tool.result === "string";
+  // Warn (amber) when the server cut the output at the tool-result cap
+  // (issue #8); errors keep their red styling.
+  const warn = tool.truncated === true && tool.status !== "error";
   const icon =
     tool.status === "running" ? (
       <Loader2 className="size-3 animate-spin" aria-hidden />
-    ) : tool.status === "done" ? (
-      <Check className="size-3" aria-hidden />
-    ) : (
+    ) : tool.status === "error" ? (
       <X className="size-3 text-destructive" aria-hidden />
+    ) : warn ? (
+      <AlertTriangle className="size-3" aria-hidden />
+    ) : (
+      <Check className="size-3" aria-hidden />
     );
+  const chipLabel = warn ? t("toolTruncated", { name: tool.name }) : label;
   return (
     <div className="max-w-full min-w-0">
       <button
@@ -222,12 +231,13 @@ function ToolChipView({ tool, label }: { tool: ToolChip; label: string }) {
         aria-expanded={open}
         disabled={!expandable}
         onClick={() => expandable && setOpen((o) => !o)}
-        className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs text-muted-foreground ${
-          expandable ? "cursor-pointer transition-colors hover:bg-muted hover:text-foreground" : ""
-        }`}
+        data-testid={warn ? "tool-chip-truncated" : "tool-chip"}
+        className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs ${
+          warn ? "border-amber-500/60 text-amber-600 dark:text-amber-400" : "text-muted-foreground"
+        } ${expandable ? "cursor-pointer transition-colors hover:bg-muted hover:text-foreground" : ""}`}
       >
         {icon}
-        {label}
+        {chipLabel}
         {expandable && (
           <ChevronDown
             className={`size-3 transition-transform ${open ? "rotate-180" : ""}`}

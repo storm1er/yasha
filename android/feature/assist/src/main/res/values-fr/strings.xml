@@ -24,6 +24,7 @@
     <string name="tool_running">en cours</string>
     <string name="tool_done">terminé</string>
     <string name="tool_error">erreur</string>
+    <string name="tool_truncated">tronqué</string>
     <string name="floaty_mic">Démarrer la saisie vocale</string>
     <string name="floaty_listening">J\'écoute… touchez le micro pour arrêter</string>
     <string name="floaty_mic_error">Microphone indisponible. Vérifiez les autorisations de l\'application.</string>

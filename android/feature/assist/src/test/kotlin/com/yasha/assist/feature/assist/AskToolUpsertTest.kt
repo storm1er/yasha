@@ -15,4 +15,11 @@ class AskToolUpsertTest {
             second,
         )
     }
+
+    @Test
+    fun `upsert keeps the truncation flag (issue 8)`() {
+        val started = emptyList<AskTool>().upsertTool("ketch", "search", "running")
+        val done = started.upsertTool("ketch", "search", "done", truncated = true)
+        assertEquals(listOf(AskTool("ketch", "search", "done", truncated = true)), done)
+    }
 }

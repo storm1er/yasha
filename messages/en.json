@@ -88,6 +88,7 @@
     "toolRunning": "{name}…",
     "toolDone": "{name} done",
     "toolError": "{name} failed",
+    "toolTruncated": "{name} truncated",
     "toolArgs": "Arguments",
     "toolResult": "Result",
     "toolNoResult": "Waiting for the tool to finish…",
@@ -150,6 +151,8 @@
     "chatLimitsTitle": "Chat limits",
     "chatLimitsIntro": "History window and first-token timeout for interactive chats.",
     "chatWindowMessages": "Window messages",
+    "chatToolResultMaxChars": "Tool output limit (chars)",
+    "chatToolResultMaxCharsHint": "Max characters of a tool result fed to the model (500–100,000). Longer outputs are cut and the tool chip shows an amber warning.",
     "chatFirstTokenTimeout": "First-token timeout (s)",
     "task": {
       "schedule": "Schedule",

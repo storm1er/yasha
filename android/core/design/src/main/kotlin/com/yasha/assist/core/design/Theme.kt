@@ -25,6 +25,8 @@ data class YashaPalette(
     val drawerSurface: Color,
     val homeGlow: Color,
     val disclaimer: Color,
+    // Warn state (issue #8): amber tool chip when output was truncated.
+    val warnAmber: Color,
 )
 
 private val LightPalette = YashaPalette(
@@ -34,6 +36,7 @@ private val LightPalette = YashaPalette(
     drawerSurface = Color(0xFFF8FAFD),
     homeGlow = Color(0x8CB7D7FE),
     disclaimer = Color(0xFF5F6368),
+    warnAmber = Color(0xFFB45309),
 )
 
 private val DarkPalette = YashaPalette(
@@ -43,6 +46,7 @@ private val DarkPalette = YashaPalette(
     drawerSurface = SurfaceDark,
     homeGlow = Color(0x4D1A3A52),
     disclaimer = Color(0xFFC4C7C5),
+    warnAmber = Color(0xFFFBBF24),
 )
 
 val LocalYashaPalette = staticCompositionLocalOf { LightPalette }

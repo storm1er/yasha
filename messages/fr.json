@@ -88,6 +88,7 @@
     "toolRunning": "{name}…",
     "toolDone": "{name} terminé",
     "toolError": "{name} en échec",
+    "toolTruncated": "{name} tronqué",
     "toolArgs": "Arguments",
     "toolResult": "Résultat",
     "toolNoResult": "En attente de la fin de l'outil…",
@@ -150,6 +151,8 @@
     "chatLimitsTitle": "Limites de chat",
     "chatLimitsIntro": "Fenêtre d'historique et délai premier token pour les chats interactifs.",
     "chatWindowMessages": "Messages de la fenêtre",
+    "chatToolResultMaxChars": "Limite de sortie d'outil (caractères)",
+    "chatToolResultMaxCharsHint": "Nombre max de caractères d'un résultat d'outil transmis au modèle (500–100 000). Au-delà, la sortie est coupée et la puce d'outil affiche un avertissement ambre.",
     "chatFirstTokenTimeout": "Délai premier token (s)",
     "task": {
       "schedule": "Planification",

@@ -65,7 +65,9 @@ export const DEFAULTS = {
   "memory.dream.cardRebuildEvery": 7,
   "mcp.maxToolRounds": 4,
   "mcp.toolTimeoutMs": 30000,
-  "mcp.toolResultMaxChars": 8000,
+  // Issue #8: raised from 8000 — big tool outputs were cut too aggressively;
+  // admins tune this in Settings → Chat limits (bounds 500–100,000).
+  "mcp.toolResultMaxChars": 20000,
   "mcp.maxUserServers": 5,
   // Chat imports (GEMINI-IMPORT-PLAN): upload cap, conversations per queue chunk,
   // per-message size cap, hard conversation stop, spool-file retention.

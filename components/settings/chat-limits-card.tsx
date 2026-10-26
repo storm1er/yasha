@@ -19,6 +19,7 @@ export function ChatLimitsCard() {
   const t = useTranslations("settings");
   const ta = useTranslations("admin");
   const [windowMessages, setWindowMessages] = useState("");
+  const [toolResultMaxChars, setToolResultMaxChars] = useState("");
   const [firstTokenTimeoutSec, setFirstTokenTimeoutSec] = useState("");
   const [maxImages, setMaxImages] = useState("");
   const [maxWindowImages, setMaxWindowImages] = useState("");
@@ -33,8 +34,10 @@ export function ChatLimitsCard() {
         if (!res.ok || !alive) return;
         const data = (await res.json()) as { values?: Record<string, unknown> };
         const windowValue = data.values?.["chat.windowMessages"];
+        const toolMaxValue = data.values?.["mcp.toolResultMaxChars"];
         const timeoutValue = data.values?.["chat.firstTokenTimeoutMs"];
         if (typeof windowValue === "number") setWindowMessages(String(windowValue));
+        if (typeof toolMaxValue === "number") setToolResultMaxChars(String(toolMaxValue));
         if (typeof timeoutValue === "number") setFirstTokenTimeoutSec(msToSeconds(timeoutValue));
         const images = data.values?.["chat.maxImagesPerMessage"];
         if (typeof images === "number") setMaxImages(String(images));
@@ -55,8 +58,11 @@ export function ChatLimitsCard() {
     if (status === "saving") return;
     const payload: Record<string, number> = {};
     const windowValue = Number.parseInt(windowMessages, 10);
+    const toolMaxValue = Number.parseInt(toolResultMaxChars, 10);
     const timeoutValue = secondsToMs(firstTokenTimeoutSec);
     if (Number.isFinite(windowValue) && windowValue > 0) payload["chat.windowMessages"] = windowValue;
+    if (Number.isFinite(toolMaxValue) && toolMaxValue >= 500 && toolMaxValue <= 100_000)
+      payload["mcp.toolResultMaxChars"] = toolMaxValue;
     if (timeoutValue !== null) {
       payload["chat.firstTokenTimeoutMs"] = timeoutValue;
     }
@@ -82,6 +88,9 @@ export function ChatLimitsCard() {
 
   const anyValid =
     (Number.isFinite(Number.parseInt(windowMessages, 10)) && Number.parseInt(windowMessages, 10) > 0) ||
+    (Number.isFinite(Number.parseInt(toolResultMaxChars, 10)) &&
+      Number.parseInt(toolResultMaxChars, 10) >= 500 &&
+      Number.parseInt(toolResultMaxChars, 10) <= 100_000) ||
     secondsToMs(firstTokenTimeoutSec) !== null ||
     (Number.isFinite(Number.parseInt(maxImages, 10)) && Number.parseInt(maxImages, 10) > 0) ||
     (Number.isFinite(Number.parseInt(maxWindowImages, 10)) && Number.parseInt(maxWindowImages, 10) > 0) ||
@@ -94,21 +103,41 @@ export function ChatLimitsCard() {
         <CardDescription>{t("chatLimitsIntro")}</CardDescription>
       </CardHeader>
       <CardContent className="grid gap-3">
-        <div className="grid gap-2">
-          <Label htmlFor="chat-limits-window">{t("chatWindowMessages")}</Label>
-          <Input
-            id="chat-limits-window"
-            type="number"
-            min={1}
-            placeholder="20"
-            data-testid="chat-limits-window"
-            value={windowMessages}
-            className="max-w-40 font-mono text-xs"
-            onChange={(e) => {
-              setWindowMessages(e.target.value);
-              setStatus("idle");
-            }}
-          />
+        <div className="grid gap-2 sm:grid-cols-2">
+          <div className="grid gap-2">
+            <Label htmlFor="chat-limits-window">{t("chatWindowMessages")}</Label>
+            <Input
+              id="chat-limits-window"
+              type="number"
+              min={1}
+              placeholder="20"
+              data-testid="chat-limits-window"
+              value={windowMessages}
+              className="max-w-40 font-mono text-xs"
+              onChange={(e) => {
+                setWindowMessages(e.target.value);
+                setStatus("idle");
+              }}
+            />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="chat-limits-tool-result">{t("chatToolResultMaxChars")}</Label>
+            <Input
+              id="chat-limits-tool-result"
+              type="number"
+              min={500}
+              max={100000}
+              placeholder="20000"
+              data-testid="chat-limits-tool-result"
+              value={toolResultMaxChars}
+              className="max-w-40 font-mono text-xs"
+              onChange={(e) => {
+                setToolResultMaxChars(e.target.value);
+                setStatus("idle");
+              }}
+            />
+            <p className="text-xs text-muted-foreground">{t("chatToolResultMaxCharsHint")}</p>
+          </div>
         </div>
         <div className="grid gap-2">
           <Label htmlFor="chat-limits-timeout">{t("chatFirstTokenTimeout")}</Label>
