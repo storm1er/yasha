@@ -14,6 +14,7 @@ import { fastModel, getSettingInt, mcpEnabled, mcpMaxToolRounds, memoryEnabled, 
 import { buildToolset, type Toolset } from "@/lib/mcp/bridge";
 import {
   createToolCallAccumulator,
+  createTurnParts,
   dispatchToolCalls,
   expandToolRounds,
   type ChatUpstreamMessage,
@@ -403,7 +404,13 @@ function buildStream(opts: StreamOpts): ReadableStream<Uint8Array> {
   let clientAborted = false;
   let persisted = false;
   const toolRecords: ToolRoundRecord[] = [];
-  const toolsMeta = () => (toolRecords.length > 0 ? { tools: toolRecords } : {});
+  // Execution-order interleaving of text and tool rounds (issue #7), persisted
+  // in meta.parts so both clients re-render chips at their original position.
+  const turnParts = createTurnParts();
+  const toolsMeta = (): Record<string, unknown> => {
+    const parts = turnParts.parts();
+    return parts ? { tools: toolRecords, parts } : {};
+  };
 
   // Failed turns keep the user message and annotate its meta with the error
   // code (timeout / upstream_* / empty_response) so both clients can render a
@@ -600,6 +607,7 @@ function buildStream(opts: StreamOpts): ReadableStream<Uint8Array> {
           }
           if (typeof delta?.content === "string" && delta.content.length > 0) {
             assistantText += delta.content;
+            turnParts.onText(delta.content);
             send({ c: delta.content });
           }
           if (chunk.usage) usage = chunk.usage;
@@ -624,6 +632,7 @@ function buildStream(opts: StreamOpts): ReadableStream<Uint8Array> {
           opts.controller.signal,
         );
         toolRecords.push(...dispatched.records);
+        turnParts.onToolRound(dispatched.records.length);
         chatMessages = [...chatMessages, ...dispatched.messages];
         round += 1;
         if (opts.controller.signal.aborted) {

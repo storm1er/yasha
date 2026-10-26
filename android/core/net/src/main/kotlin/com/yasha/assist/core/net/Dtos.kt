@@ -38,6 +38,10 @@ data class MessageDto(
 data class MessageMetaDto(
     val images: List<String> = emptyList(),
     val tools: List<ToolMetaDto> = emptyList(),
+    // Ordered text/tool interleaving of one assistant turn (issue #7): null on
+    // legacy rows (render chips above the text); a "tools" part consumes the
+    // next `count` entries of `tools` in execution order.
+    val parts: List<PartDto>? = null,
     // Voice messages (AUDIO-REFACTO-PLAN): blob + background caption state.
     val audio: String? = null,
     val audioTranscript: String? = null,
@@ -45,6 +49,13 @@ data class MessageMetaDto(
     // Server-annotated error code when the assistant turn for this user
     // message failed (e.g. "timeout") — renders the red retry notice.
     val error: String? = null,
+)
+
+@Serializable
+data class PartDto(
+    val type: String, // "text" | "tools"
+    val text: String? = null, // set on "text" parts
+    val count: Int = 0, // number of tool entries consumed on "tools" parts
 )
 
 @Serializable

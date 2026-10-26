@@ -127,6 +127,46 @@ export async function dispatchToolCalls(
   };
 }
 
+/** Ordered display parts of one assistant turn (issue #7): intermediate text
+ *  segments interleaved with tool-round markers, in execution order. A `tools`
+ *  part consumes the next `count` entries of the flat `meta.tools` list (which
+ *  stays the execution-order source of truth — the upstream `expandToolRounds`
+ *  / `synthesizeToolMessages` history is unchanged by this addition). */
+export type AssistantPart =
+  | { type: "text"; text: string }
+  | { type: "tools"; count: number };
+
+/** Accumulates the interleaving of streamed assistant text and dispatched
+ *  tool rounds for one assistant turn. */
+export function createTurnParts(): {
+  onText(delta: string): void;
+  onToolRound(count: number): void;
+  /** Ordered parts, or `undefined` when no tool round ran — without tool chips
+   *  there is nothing to interleave and the flat text stays the display. */
+  parts(): AssistantPart[] | undefined;
+} {
+  const parts: AssistantPart[] = [];
+  let text = "";
+  let hasRound = false;
+  return {
+    onText(delta) {
+      text += delta;
+    },
+    onToolRound(count) {
+      hasRound = true;
+      if (text) {
+        parts.push({ type: "text", text });
+        text = "";
+      }
+      parts.push({ type: "tools", count });
+    },
+    parts() {
+      if (!hasRound) return undefined;
+      return text ? [...parts, { type: "text", text }] : [...parts];
+    },
+  };
+}
+
 /** Read persisted tool rounds out of an assistant message's meta_json. */
 export function parseToolRounds(metaJson: string | null): ToolRoundRecord[] {
   if (!metaJson) return [];
