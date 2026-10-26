@@ -5,6 +5,11 @@ generated automatically by CI from Conventional Commits landing on `main`
 ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)).
 
+## [0.2.4] - 2026-10-26
+
+### Bug Fixes
+- **chat:** Keep tool chips at their execution position across multi-round turns (b5e207e)
+
 ## [0.2.3] - 2026-10-26
 
 ### Features
