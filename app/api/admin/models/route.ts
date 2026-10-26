@@ -1,29 +1,28 @@
 import { NextResponse } from "next/server";
-import { requireAdmin, upstreamErrorResponse } from "@/lib/admin-auth";
-import { models, mutationsEnabled } from "@/lib/lemonade-admin";
-import type { LemonadeModel } from "@/lib/lemonade-admin";
+import { requireControlPlane, upstreamErrorResponse } from "@/lib/admin-auth";
+import { backendMutationsEnabled } from "@/lib/provider/lemonade";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
  * GET /api/admin/models → raw-ish list {id, recipe, size, downloaded, labels,
- * checkpoint, max_context_window} (admin only). Also carries
- * `mutations_enabled` (read-only env flag) so the admin UI can gate action
- * buttons without probing upstream mutating endpoints.
+ * checkpoint, max_context_window} from the provider's control plane (admin
+ * only). Also carries `mutations_enabled` (read-only env flag) so the admin
+ * UI can gate action buttons without probing upstream mutating endpoints.
  */
-export async function GET() {
-  const guard = await requireAdmin();
+export async function GET(req: Request) {
+  const guard = await requireControlPlane(req);
   if (!guard.ok) return guard.response;
 
   let json;
   try {
-    json = await models();
+    json = await guard.cp.models();
   } catch {
     return upstreamErrorResponse();
   }
 
-  const list = (Array.isArray(json.data) ? json.data : []).map((m: LemonadeModel) => ({
+  const list = (Array.isArray(json.data) ? json.data : []).map((m) => ({
     id: typeof m.id === "string" ? m.id : null,
     recipe: typeof m.recipe === "string" ? m.recipe : null,
     size: typeof m.size === "number" || typeof m.size === "string" ? m.size : null,
@@ -36,6 +35,6 @@ export async function GET() {
   return NextResponse.json({
     models: list,
     count: list.length,
-    mutations_enabled: mutationsEnabled(),
+    mutations_enabled: backendMutationsEnabled(),
   });
 }

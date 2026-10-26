@@ -14,10 +14,9 @@ import { buildMemoryContext } from "@/lib/memory/recall";
 import {
   hasInFlightGeneration,
   releaseGeneration,
-  stripReasoningFields,
   tryAcquireGeneration,
-  forEachSseData,
-} from "@/lib/lemonade-stream";
+} from "@/lib/provider/gate";
+import { forEachSseData, stripReasoningFields } from "@/lib/provider/http";
 
 let admin: AdminUser;
 let user: TestUser & { userId: string };
@@ -90,7 +89,7 @@ beforeEach(() => {
   db.delete(threadSummaries).run();
   db.delete(settings).run();
   releaseGeneration(user.userId);
-  setFastModel("fast-model.test");
+  setFastModel("default:fast-model.test");
   invalidateSettingsCache();
 });
 
@@ -183,7 +182,7 @@ describe("chat happy path (new thread)", () => {
     const threadId = (events[0] as { threadId: string }).threadId;
     const thread = db.select().from(threads).where(eq(threads.id, threadId)).get()!;
     expect(thread.title).toBe("remember the milk");
-    expect(thread.model).toBe("fast-model.test");
+    expect(thread.model).toBe("default:fast-model.test");
     const asst = assistantMessages(threadId);
     expect(asst.length).toBe(1);
     expect(asst[0].content).toBe("Hi !");
@@ -226,16 +225,16 @@ describe("chat happy path (new thread)", () => {
     let sent = JSON.parse(mock.lastCall(CHAT)!.body!) as { model: string };
     expect(sent.model).toBe("fast-model.test"); // blank thread.model → defaultPick
 
-    res = await postChat(chatBody({ threadId: "th-blank-model", model: "other-model.test" }));
+    res = await postChat(chatBody({ threadId: "th-blank-model", model: "default:other-model.test" }));
     await drain(res);
     sent = JSON.parse(mock.lastCall(CHAT)!.body!) as { model: string };
     expect(sent.model).toBe("other-model.test");
-    expect(db.select().from(threads).where(eq(threads.id, "th-blank-model")).get()!.model).toBe("other-model.test");
+    expect(db.select().from(threads).where(eq(threads.id, "th-blank-model")).get()!.model).toBe("default:other-model.test");
 
     // same model again → skip update branch
-    res = await postChat(chatBody({ threadId: "th-blank-model", model: "other-model.test" }));
+    res = await postChat(chatBody({ threadId: "th-blank-model", model: "default:other-model.test" }));
     await drain(res);
-    expect(db.select().from(threads).where(eq(threads.id, "th-blank-model")).get()!.model).toBe("other-model.test");
+    expect(db.select().from(threads).where(eq(threads.id, "th-blank-model")).get()!.model).toBe("default:other-model.test");
   });
 
   it("window overflow injects thread summary; recall block from memories", async () => {
@@ -763,7 +762,7 @@ describe("chat persist edge arms", () => {
   });
 });
 
-describe("lemonade-stream helpers", () => {
+describe("provider http + gate helpers", () => {
   it("in-flight gate is per user", () => {
     const a = tryAcquireGeneration("gate-u");
     expect(a).toBeTruthy();
@@ -819,17 +818,17 @@ describe("attachment turns follow the plain model fallback chain", () => {
     let res = await postChat({ message: "text turn" });
     await drain(res);
     const th = db.select().from(threads).all()[0];
-    expect(th.model).toBe("fast-model.test");
+    expect(th.model).toBe("default:fast-model.test");
 
     res = await postChat({ message: "what is this", threadId: th.id, attachments: [png] });
     await drain(res);
     expect((JSON.parse(mock.lastCall(CHAT)!.body!) as { model: string }).model).toBe("fast-model.test");
 
-    res = await postChat({ message: "use other", threadId: th.id, attachments: [png], model: "other-model.test" });
+    res = await postChat({ message: "use other", threadId: th.id, attachments: [png], model: "default:other-model.test" });
     await drain(res);
     expect((JSON.parse(mock.lastCall(CHAT)!.body!) as { model: string }).model).toBe("other-model.test");
     // explicit body-model persists onto the thread (existing behavior)…
-    expect(db.select().from(threads).all()[0].model).toBe("other-model.test");
+    expect(db.select().from(threads).all()[0].model).toBe("default:other-model.test");
 
     // …so later turns (attachments or not) follow the thread's model
     res = await postChat({ message: "back to text", threadId: th.id });
@@ -844,7 +843,7 @@ describe("attachment turns follow the plain model fallback chain", () => {
     const res = await postChat({ message: "", attachments: [png] });
     await drain(res);
     const th = db.select().from(threads).all()[0];
-    expect(th.model).toBe("fast-model.test");
+    expect(th.model).toBe("default:fast-model.test");
     expect((JSON.parse(mock.lastCall(CHAT)!.body!) as { model: string }).model).toBe("fast-model.test");
   });
 });

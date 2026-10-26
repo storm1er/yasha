@@ -7,7 +7,7 @@ import {
   parseStoredImages,
   parseStoredAudio,
 } from "@/lib/chat-attachments";
-import { isAudioInputModel, AUDIO_TURN_INSTRUCTION } from "@/lib/audio-input";
+import { AUDIO_TURN_INSTRUCTION } from "@/lib/audio-input";
 import { db, ensureReady } from "@/lib/db";
 import { messages, threads } from "@/lib/db/schema";
 import { fastModel, getSettingInt, mcpEnabled, mcpMaxToolRounds, memoryEnabled, resolveEventConfig, smartModel } from "@/lib/settings";
@@ -27,13 +27,14 @@ import { getUserMcpEnabled } from "@/lib/mcp/prefs";
 import { enqueueJob } from "@/lib/jobs/queue";
 import { ensureWorker } from "@/lib/jobs/worker";
 import {
-  BASE_URL,
-  fetchChatModels,
-  forEachSseData,
   hasInFlightGeneration,
   releaseGeneration,
   tryAcquireGeneration,
-} from "@/lib/lemonade-stream";
+} from "@/lib/provider/gate";
+import { forEachSseData } from "@/lib/provider/http";
+import { ensureCatalog, isAudioInputModel, pickProvider, upstreamModelId, type CatalogState } from "@/lib/provider/catalog";
+import { chatProviders } from "@/lib/provider/registry";
+import type { ChatProvider } from "@/lib/provider/types";
 import { rateLimit } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
@@ -51,6 +52,19 @@ export async function POST(req: NextRequest) {
   if (limited) return limited;
   const userId = await getAuthedUserId();
   if (!userId) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+
+  // Zero wired providers = "no backend configured" soft state (Q22): everything
+  // else keeps working, only model-backed features answer 503.
+  const providers = chatProviders();
+  if (providers.length === 0) {
+    return NextResponse.json({ error: "no_backend" }, { status: 503 });
+  }
+
+  // Synced catalog (docs/provider-plan.md M2b), resolved LAZILY: requests
+  // that fail pure validation never touch a provider. At most one TTL-cached
+  // sync per POST feeds model validation, the audio gates and provider pick.
+  let catalog: CatalogState | null = null;
+  const catalogState = async (): Promise<CatalogState> => (catalog ??= await ensureCatalog());
 
   let body: { threadId?: unknown; message?: unknown; model?: unknown; attachments?: unknown };
   try {
@@ -74,9 +88,10 @@ export async function POST(req: NextRequest) {
   if (text.length > 32000) return NextResponse.json({ error: "invalid_message" }, { status: 400 });
   if (!text && images.length === 0 && !audio) return NextResponse.json({ error: "invalid_message" }, { status: 400 });
 
-  // Optional client-chosen model: validated against the cached chat-capable
-  // allowlist (labels ∋ "chat" AND downloaded|openrouter). No upstream chat
-  // call happens for an invalid model.
+  // Optional client-chosen model: validated against the synced catalog. When
+  // every provider is down and nothing was served, answer 502 (upstream
+  // problem); otherwise an unknown id is a plain invalid_model. No upstream
+  // chat call happens for an invalid model.
   let bodyModel: string | null = null;
   if (body.model !== undefined && body.model !== null && body.model !== "") {
     if (typeof body.model !== "string" || body.model.length > 200) {
@@ -84,13 +99,11 @@ export async function POST(req: NextRequest) {
     }
     const requested = body.model.trim();
     if (!requested) return NextResponse.json({ error: "invalid_model" }, { status: 400 });
-    let chatModels;
-    try {
-      chatModels = await fetchChatModels();
-    } catch {
-      return NextResponse.json({ error: "upstream_models" }, { status: 502 });
-    }
-    if (!chatModels.some((m) => m.id === requested)) {
+    const state = await catalogState();
+    if (!state.models.some((m) => m.id === requested)) {
+      if (state.allUnavailable && state.models.length === 0) {
+        return NextResponse.json({ error: "upstream_models" }, { status: 502 });
+      }
       return NextResponse.json({ error: "invalid_model" }, { status: 400 });
     }
     bodyModel = requested;
@@ -134,6 +147,7 @@ export async function POST(req: NextRequest) {
   // hard-compatible model, and the smart model is never one of them — even if
   // it would match (admins pick audio input on the FAST model only).
   if (audio) {
+    await catalogState(); // audio flags come from the synced catalog rows
     if (!isAudioInputModel(model)) {
       return NextResponse.json({ error: "audio_not_supported" }, { status: 400 });
     }
@@ -296,6 +310,16 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Single provider: no catalog lookup needed. Multi-provider: the pick uses
+  // the catalog (synced at most once per POST, only when this far was reached
+  // with anything needing it).
+  const provider =
+    providers.length === 1
+      ? providers[0]
+      : pickProvider(providers, (await catalogState()).models, model);
+  // DB + client see canonical ids; only the outbound body carries the
+  // provider's own id (Q6).
+  const upstreamModel = upstreamModelId(model, provider.id);
   const controller = tryAcquireGeneration(userId);
   if (!controller) {
     return NextResponse.json({ error: "busy" }, { status: 429 });
@@ -309,6 +333,8 @@ export async function POST(req: NextRequest) {
     userMsgId,
     userMeta: meta,
     model,
+    upstreamModel,
+    provider,
     upstreamMessages: expandedMessages,
     toolset,
     newThread,
@@ -337,6 +363,10 @@ type StreamOpts = {
    * marking so images/audio survive the `error` annotation). */
   userMeta: Record<string, unknown>;
   model: string;
+  /** The serving provider's own (un-namespaced) id for `model` — what goes
+   *  in the outbound completion body (Q6 canonical ids stay Yasha-internal). */
+  upstreamModel: string;
+  provider: ChatProvider;
   upstreamMessages: ChatUpstreamMessage[];
   toolset: Toolset;
   newThread: boolean;
@@ -492,7 +522,7 @@ function buildStream(opts: StreamOpts): ReadableStream<Uint8Array> {
       for (;;) {
         const toolAcc = createToolCallAccumulator();
         const body: Record<string, unknown> = {
-          model: opts.model,
+          model: opts.upstreamModel,
           messages: chatMessages,
           stream: true,
           stream_options: { include_usage: true },
@@ -504,12 +534,7 @@ function buildStream(opts: StreamOpts): ReadableStream<Uint8Array> {
 
         let upstream: Response;
         try {
-          upstream = await fetch(`${BASE_URL}/v1/chat/completions`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-            signal: opts.controller.signal,
-          });
+          upstream = await opts.provider.completion(body, opts.controller.signal);
         } catch {
           clearFirstTokenTimer();
           if (clientAborted) {

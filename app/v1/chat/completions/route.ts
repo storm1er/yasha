@@ -3,13 +3,12 @@ import { ensureReady } from "@/lib/db";
 import { getSettingInt, mcpEnabled, mcpMaxToolRounds, memoryEnabled } from "@/lib/settings";
 import { authenticateApiKey, invalidApiKeyResponse, openAiError } from "@/lib/openai-auth";
 import {
-  BASE_URL,
-  forEachSseData,
-  fetchChatModels,
   releaseGeneration,
-  stripReasoningFields,
   tryAcquireGeneration,
-} from "@/lib/lemonade-stream";
+} from "@/lib/provider/gate";
+import { forEachSseData, stripReasoningFields } from "@/lib/provider/http";
+import { ensureCatalog, pickProvider, upstreamModelId } from "@/lib/provider/catalog";
+import { chatProviders } from "@/lib/provider/registry";
 import { buildMemoryContext } from "@/lib/memory/recall";
 import { getUserMemoryEnabled } from "@/lib/memory/prefs";
 import { getUserMcpEnabled } from "@/lib/mcp/prefs";
@@ -39,7 +38,7 @@ function invalidRequest(message: string) {
 function upstreamError(status?: number) {
   return openAiError(
     502,
-    `Upstream Lemonade request failed${status ? ` with status ${status}` : ""}.`,
+    `Upstream request failed${status ? ` with status ${status}` : ""}.`,
     "api_error",
     "upstream_error"
   );
@@ -122,13 +121,20 @@ export async function POST(req: NextRequest) {
     return invalidRequest("'model' must be a non-empty string.");
   }
 
-  let allowed: Set<string>;
-  try {
-    allowed = new Set((await fetchChatModels()).map((m) => m.id));
-  } catch {
+  const providers = chatProviders();
+  if (providers.length === 0) {
+    return openAiError(
+      503,
+      "No backend is configured. Ask an admin to add one under Settings → Backend.",
+      "api_error",
+      "no_backend"
+    );
+  }
+  const catalog = await ensureCatalog();
+  if (catalog.allUnavailable && catalog.models.length === 0) {
     return upstreamError();
   }
-  if (!allowed.has(model)) {
+  if (!catalog.models.some((m) => m.id === model)) {
     return openAiError(
       404,
       `The model '${model}' does not exist or you do not have access to it.`,
@@ -172,7 +178,7 @@ export async function POST(req: NextRequest) {
   const baseBody = (): Record<string, unknown> => {
     const b: Record<string, unknown> = {
       ...restBody,
-      model,
+      model: upstreamModel,
       messages: upstreamMessages,
       max_tokens: maxTokens,
       stream,
@@ -183,6 +189,9 @@ export async function POST(req: NextRequest) {
     }
     return b;
   };
+
+  const provider = pickProvider(providers, catalog.models, model);
+  const upstreamModel = upstreamModelId(model, provider.id);
 
   const controller = tryAcquireGeneration(caller.userId);
   if (!controller) {
@@ -214,12 +223,7 @@ export async function POST(req: NextRequest) {
   let upstream: Response;
   for (;;) {
     try {
-      upstream = await fetch(`${BASE_URL}/v1/chat/completions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(baseBody()),
-        signal: controller.signal,
-      });
+      upstream = await provider.completion(baseBody(), controller.signal);
     } catch {
       clearTimeout(timeout);
       release();
@@ -271,12 +275,7 @@ export async function POST(req: NextRequest) {
         );
         upstreamMessages = [...upstreamMessages, ...toolMsgs];
         round += 1;
-        upstream = await fetch(`${BASE_URL}/v1/chat/completions`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(baseBody()),
-          signal: controller.signal,
-        });
+        upstream = await provider.completion(baseBody(), controller.signal);
         if (!upstream.ok || !upstream.body) throw new Error("upstream_round_failed");
       }
     } catch {
@@ -351,12 +350,7 @@ export async function POST(req: NextRequest) {
         upstreamMessages = [...upstreamMessages, ...toolMsgs];
         round += 1;
         try {
-          current = await fetch(`${BASE_URL}/v1/chat/completions`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(baseBody()),
-            signal: controller.signal,
-          });
+          current = await provider.completion(baseBody(), controller.signal);
           if (!current.ok || !current.body) throw new Error("upstream_round_failed");
         } catch {
           send(

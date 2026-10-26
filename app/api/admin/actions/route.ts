@@ -1,25 +1,13 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { requireAdmin } from "@/lib/admin-auth";
-import {
-  MutationsDisabledError,
-  del,
-  load,
-  pull,
-  unload,
-  type LoadOptions,
-  type PullOptions,
-} from "@/lib/lemonade-admin";
+import { controlPlaneErrorResponse, providerParam, requireAdmin } from "@/lib/admin-auth";
+import { controlPlaneForAdmin } from "@/lib/provider/registry";
+import { MutationsDisabledError, type ControlPlane } from "@/lib/provider/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const ACTIONS = {
-  load,
-  unload,
-  delete: del,
-} as const;
-
-type Action = keyof typeof ACTIONS;
+const ACTION_NAMES = ["pull", "load", "unload", "delete"] as const;
+type Action = (typeof ACTION_NAMES)[number];
 
 const PULL_SOURCES = ["huggingface", "modelscope"] as const;
 const MODEL_NAME_RE = /^[A-Za-z0-9._-]+$/;
@@ -29,9 +17,9 @@ function trimmedField(value: unknown): string | undefined {
 }
 
 /** Per-load overrides accepted alongside {action:"load", model}. */
-function loadOptionsFrom(body: unknown): LoadOptions {
+function loadOptionsFrom(body: unknown): Parameters<ControlPlane["load"]>[1] {
   const b = body as Record<string, unknown>;
-  const out: LoadOptions = {};
+  const out: NonNullable<Parameters<ControlPlane["load"]>[1]> = {};
   const ctx = b.ctx_size;
   if (typeof ctx === "number" && Number.isInteger(ctx) && ctx > 0 && ctx <= 8_388_608) {
     out.ctx_size = ctx;
@@ -57,9 +45,9 @@ function loadOptionsFrom(body: unknown): LoadOptions {
  *  recipe is required whenever checkpoint is set, source must be
  *  "huggingface"|"modelscope", and model is restricted to [A-Za-z0-9._-].
  * Booleans are forwarded only when actually booleans.
- * Always 503 {"error":"mutations_disabled"} while ADMIN_ALLOW_MUTATIONS !==
- * "true" (default) — no upstream request is attempted. When the flag is on,
- * the lib/lemonade-admin helper performs the call.
+ * Always 503 {"error":"mutations_disabled"} while ADMIN_ALLOW_BACKEND_MUTATIONS
+ * !== "true" (default) — no upstream request is attempted. When the flag is on,
+ * the provider's control plane performs the call.
  */
 export async function POST(req: NextRequest) {
   const guard = await requireAdmin();
@@ -73,11 +61,8 @@ export async function POST(req: NextRequest) {
   }
   const action = (body as { action?: unknown })?.action;
   const model = (body as { model?: unknown })?.model;
-  if (typeof action !== "string" || (action !== "pull" && !(action in ACTIONS))) {
-    return NextResponse.json(
-      { error: "invalid_action", allowed: ["pull", ...Object.keys(ACTIONS)] },
-      { status: 400 }
-    );
+  if (typeof action !== "string" || !(ACTION_NAMES as readonly string[]).includes(action)) {
+    return NextResponse.json({ error: "invalid_action", allowed: ACTION_NAMES }, { status: 400 });
   }
   if (typeof model !== "string" || !model.trim() || model.length > 200) {
     return NextResponse.json({ error: "invalid_model" }, { status: 400 });
@@ -135,21 +120,27 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const lookup = controlPlaneForAdmin(providerParam(req));
+  if (!lookup.ok) return controlPlaneErrorResponse(lookup);
+  const cp = lookup.controlPlane;
+
   try {
     let result: unknown;
     if (action === "pull") {
-      const options: PullOptions = { recipe, checkpoint, source, mmproj };
+      const options: Parameters<ControlPlane["pull"]>[1] = { recipe, checkpoint, source, mmproj };
       const vision = (body as { vision?: unknown })?.vision;
       const embedding = (body as { embedding?: unknown })?.embedding;
       const reranking = (body as { reranking?: unknown })?.reranking;
       if (typeof vision === "boolean") options.vision = vision;
       if (typeof embedding === "boolean") options.embedding = embedding;
       if (typeof reranking === "boolean") options.reranking = reranking;
-      result = await pull(model.trim(), options);
+      result = await cp.pull(model.trim(), options);
     } else if (action === "load") {
-      result = await load(model.trim(), loadOptionsFrom(body));
+      result = await cp.load(model.trim(), loadOptionsFrom(body));
+    } else if (action === "unload") {
+      result = await cp.unload(model.trim());
     } else {
-      result = await ACTIONS[action as Exclude<Action, "load">](model.trim());
+      result = await cp.del(model.trim());
     }
     return NextResponse.json({ ok: true, action, result });
   } catch (err) {

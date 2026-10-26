@@ -17,10 +17,10 @@ services:
   # ═══════════════════ LEMONADE (bundled LLM backend) ════════════════════════
   lemonade:
     # ── Enable the bundled backend ───────────────────────────────────────────
-    # Keep LEMONADE_BASE_URL=http://lemonade:13305 in .env (the default).
+    # Keep BACKEND_BASE_URL=http://lemonade:13305 in .env (the default).
     # Using your own Lemonade instead? Leave this at 0 and point
-    # LEMONADE_BASE_URL in .env at it — then you may also want
-    # ADMIN_ALLOW_MUTATIONS=false in .env.
+    # BACKEND_BASE_URL in .env at it — then you may also want
+    # ADMIN_ALLOW_BACKEND_MUTATIONS=false in .env.
     # deploy:
     #   replicas: 1
     #

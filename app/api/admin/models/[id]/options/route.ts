@@ -1,12 +1,13 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { requireAdmin, upstreamErrorResponse } from "@/lib/admin-auth";
 import {
-  MutationsDisabledError,
-  loadedModels,
-  modelOptions,
-  pinModel,
-  setModelOptions,
-} from "@/lib/lemonade-admin";
+  controlPlaneErrorResponse,
+  providerParam,
+  requireAdmin,
+  requireControlPlane,
+  upstreamErrorResponse,
+} from "@/lib/admin-auth";
+import { controlPlaneForAdmin } from "@/lib/provider/registry";
+import { MutationsDisabledError } from "@/lib/provider/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,9 +36,10 @@ function validOptionValue(key: OptionKey, value: unknown): boolean {
  * Proxies GET /v1/models/{id}/options and enriches the payload with the
  * runtime state of the model (loaded + pinned) from /v1/health.
  */
-export async function GET(_req: NextRequest, { params }: Params) {
-  const guard = await requireAdmin();
+export async function GET(req: NextRequest, { params }: Params) {
+  const guard = await requireControlPlane(req);
   if (!guard.ok) return guard.response;
+  const cp = guard.cp;
 
   const { id } = await params;
   if (!id || id.length > 200) return NextResponse.json({ error: "invalid_model" }, { status: 400 });
@@ -46,8 +48,8 @@ export async function GET(_req: NextRequest, { params }: Params) {
   let loaded = false;
   let pinned = false;
   try {
-    options = await modelOptions(id);
-    const entries = await loadedModels();
+    options = await cp.modelOptions(id);
+    const entries = await cp.loadedModels();
     const entry = entries.find((e) => e.model_name === id);
     loaded = Boolean(entry);
     pinned = entry?.pinned === true;
@@ -105,16 +107,20 @@ export async function POST(req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: "invalid_request", detail: "empty_patch" }, { status: 400 });
   }
 
+  const lookup = controlPlaneForAdmin(providerParam(req));
+  if (!lookup.ok) return controlPlaneErrorResponse(lookup);
+  const cp = lookup.controlPlane;
+
   try {
     let savedOptions = null;
     if (Object.keys(options).length > 0) {
-      savedOptions = await setModelOptions(id, options);
+      savedOptions = await cp.setModelOptions(id, options);
     }
     let pinnedApplied = false;
     if (pin !== undefined) {
-      const entry = (await loadedModels()).find((e) => e.model_name === id);
+      const entry = (await cp.loadedModels()).find((e) => e.model_name === id);
       if (entry) {
-        await pinModel(id, pin);
+        await cp.pin(id, pin);
         pinnedApplied = true;
       }
     }

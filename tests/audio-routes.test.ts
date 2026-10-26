@@ -5,16 +5,17 @@ import * as audioConfigRoute from "@/app/api/audio/config/route";
 import * as transcribeRoute from "@/app/api/chat/messages/[id]/transcribe/route";
 import { ensureReady } from "@/lib/db";
 import { db, setFastModel, setSetting, rawSqlite } from "./support/db";
+import { clearModels, seedModel } from "./support/catalog";
 import { invalidateSettingsCache } from "@/lib/settings";
 import { callRoute, signUp, waitFor, type TestUser } from "./support/app";
-import { mockLemonade, modelsResponse, sseCompletion, type LemonadeMock } from "./support/lemonade";
+import { mockLemonade, sseCompletion, type LemonadeMock } from "./support/lemonade";
 import { jobs, messages, threads } from "@/lib/db/schema";
 import { VOICE_MESSAGE_MARKER } from "@/lib/audio-input";
 
 const CHAT = "/v1/chat/completions";
 const AUDIO = "data:audio/wav;base64,UklGRg==";
-const GEMMA = "user.gemma-4-E4B-it-GGUF-UD-Q4_K_XL";
-const GEMMA_SMART = "Gemma-4-12B-it-GGUF";
+const GEMMA = "default:user.gemma-4-E4B-it-GGUF-UD-Q4_K_XL"; // canonical (Q6)
+const GEMMA_SMART = "default:Gemma-4-12B-it-GGUF";
 
 let user: TestUser & { userId: string };
 let mock: LemonadeMock;
@@ -47,6 +48,11 @@ beforeEach(() => {
   db.delete(messages).run();
   db.delete(threads).run();
   db.delete(jobs).run();
+  // Audio capability is a synced catalog flag (M2b): seed both Gemma rows as
+  // audio-capable (fresh, so ensureCatalog serves them without re-syncing).
+  clearModels();
+  seedModel({ id: GEMMA, audioInput: true });
+  seedModel({ id: GEMMA_SMART, audioInput: true });
   setFastModel(GEMMA);
   invalidateSettingsCache();
 });
@@ -60,7 +66,7 @@ afterEach(() => {
 
 describe("POST /api/chat — audio gates", () => {
   it("400 audio_not_supported on an incompatible model, nothing persisted", async () => {
-    setFastModel("Qwen3-8B-it-GGUF");
+    setFastModel("default:Qwen3-8B-it-GGUF");
     const res = await postChat({ message: "voiced", attachments: { audio: AUDIO } });
     expect(res.status).toBe(400);
     expect((await res.json() as { error: string }).error).toBe("audio_not_supported");
@@ -146,7 +152,6 @@ describe("POST /api/chat — audio gates", () => {
     setSetting("chat.audio_transcription", "");
     setSetting("fast_model", "");
     invalidateSettingsCache();
-    mock.route("/v1/models", () => modelsResponse([{ id: GEMMA }]));
     const res = await postChat({ message: "voiced", model: GEMMA, attachments: { audio: AUDIO } });
     expect(res.status).toBe(200);
     await res.text();
@@ -165,11 +170,12 @@ describe("GET /api/audio/config", () => {
     invalidateSettingsCache();
     const res = await callRoute(audioConfigRoute.GET, { method: "GET", path: "/api/audio/config", cookie: user.cookie });
     expect(res.status).toBe(200);
+    // compatibleModels are the audio-capable catalog ids (providerId, remoteId order)
     expect(await res.json()).toEqual({
       enabled: true,
       model: GEMMA,
       smartModel: GEMMA_SMART,
-      compatibleModels: ["Gemma-4 E2B", "Gemma-4 E4B", "Gemma-4 12B"],
+      compatibleModels: [GEMMA_SMART, GEMMA],
       smartAudioCapable: true,
       maxAudioBytes: 8388608,
     });

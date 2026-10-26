@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { requireAdmin } from "@/lib/admin-auth";
-import { MutationsDisabledError, downloadsControl } from "@/lib/lemonade-admin";
+import { controlPlaneErrorResponse, providerParam, requireAdmin } from "@/lib/admin-auth";
+import { controlPlaneForAdmin } from "@/lib/provider/registry";
+import { MutationsDisabledError } from "@/lib/provider/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,9 +15,9 @@ type DownloadAction = (typeof DOWNLOAD_ACTIONS)[number];
  * Passthrough to upstream /v1/downloads/control: pause/cancel return the latest
  * job snapshot for the download job id; remove returns {"status":"ok"}
  * (with "missing":true when the job is already gone).
- * Always 503 {"error":"mutations_disabled"} while ADMIN_ALLOW_MUTATIONS !==
- * "true" (default) — no upstream request is attempted. When the flag is on,
- * the lib/lemonade-admin helper performs the call.
+ * Always 503 {"error":"mutations_disabled"} while ADMIN_ALLOW_BACKEND_MUTATIONS
+ * !== "true" (default) — no upstream request is attempted. When the flag is on,
+ * the control plane performs the call.
  */
 export async function POST(req: NextRequest) {
   const guard = await requireAdmin();
@@ -40,8 +41,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const lookup = controlPlaneForAdmin(providerParam(req));
+  if (!lookup.ok) return controlPlaneErrorResponse(lookup);
+
   try {
-    const result = await downloadsControl(id.trim(), action as DownloadAction);
+    const result = await lookup.controlPlane.downloadsControl(id.trim(), action as DownloadAction);
     return NextResponse.json({ ok: true, action, result });
   } catch (err) {
     if (err instanceof MutationsDisabledError) {

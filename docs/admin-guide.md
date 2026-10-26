@@ -17,7 +17,7 @@ uncommenting lines in `compose.override.yml` (start from
 | **Bundled Caddy, plain HTTP** | Caddy option A: `replicas: 1` + `"80:80"` → `http://<host>`. Option B adds a plain-HTTP Lemonade front on `:13305` (`CADDY_LEMONADE_ADDRESS=":13305"` + published port, LAN-only!). |
 | **Bundled Caddy, TLS** | Caddy option C: `replicas: 1` + ports `80`+`443` + `CADDY_ADDRESS=your.domain.tld` (and `CADDY_LEMONADE_ADDRESS=llm.…` for the backend too) in `.env` → automatic Let's Encrypt. No Caddyfile on disk — it is inlined in `compose.yml`. |
 | **Your own TLS proxy** | Yasha "open ports" block in the override; forward `Host` + `X-Forwarded-Proto: https` to `127.0.0.1:3000`. No Caddy needed. |
-| **Bundled vs external Lemonade** | Lemonade block `replicas: 1` (optionally + NVIDIA/AMD GPU lines) keeps `LEMONADE_BASE_URL=http://lemonade:13305`. External instance? leave it at 0, point `LEMONADE_BASE_URL` at your URL, consider `ADMIN_ALLOW_MUTATIONS=false`. |
+| **Bundled vs external backend** | Lemonade block `replicas: 1` (optionally + NVIDIA/AMD GPU lines) keeps `BACKEND_BASE_URL=http://lemonade:13305`. External instance? leave it at 0, point `BACKEND_BASE_URL` at your URL (`BACKEND_TYPE=lemonade` or `openai_compatible`), consider `ADMIN_ALLOW_BACKEND_MUTATIONS=false`. More providers later in Settings → Backend. |
 | **From source** | Contributors: `docker compose up` builds the image; the dev override adds hot reload (README Development). |
 
 ## First boot
@@ -33,25 +33,28 @@ uncommenting lines in `compose.override.yml` (start from
    your URL. **Sign in as that admin first** — regular signups get role `user`.
 4. Once the admin exists, you may want to clear `BOOTSTRAP_ADMIN_*` from `.env` and restart
    (they're inert while users exist, but keeping them out of `.env` is tidier).
-5. Check the health badge in the UI or `GET /api/health`; the Lemonade connection status is at
-   `GET /api/lemonade/status`.
+5. Check the health badge in the UI or `GET /api/health`; per-provider connection status is at
+   `GET /api/backend/status` (the badge shows the worst status across enabled providers).
 
 ## Users & access control
 
 - **Self-service registration** can be disabled in Settings → Admin (`auth.allowRegistration`);
   empty instances always allow it so the bootstrap can't lock itself out.
-- **Admins** manage users (Settings → Admin → Users), instance settings, the Lemonade backend
-  (models, pull/load/unload when `ADMIN_ALLOW_MUTATIONS=true`), background jobs, and MCP servers.
+- **Admins** manage users (Settings → Admin → Users), instance settings, the **Backend** tab
+  (provider CRUD, the synced model catalog with capability overrides, and the management console
+  when a Lemonade provider is selected — pull/load/unload when `ADMIN_ALLOW_BACKEND_MUTATIONS=true`),
+  background jobs, and MCP servers.
 - **API keys** (Settings → API keys): per-user keys for the OpenAI-compatible endpoint, shown
   once, stored hashed; revoke anytime. Example:
 
   ```bash
   curl -N https://yasha.example.com/v1/chat/completions \
     -H "Authorization: Bearer yasha_…key…" -H "Content-Type: application/json" \
-    -d '{"model":"smart","messages":[{"role":"user","content":"hello"}],"stream":true}'
+    -d '{"model":"default:gemma-3n-e4b-it","messages":[{"role":"user","content":"hello"}],"stream":true}'
   ```
 
-  `GET /v1/models` lists routable models (`fast`, `smart`, or explicit Lemonade ids).
+  `GET /v1/models` lists routable models as canonical `provider:remote` ids (`owned_by` is the
+  provider id) — use those ids verbatim as `model`.
 
 ## TLS / reverse proxy
 
@@ -117,8 +120,8 @@ Settings → Admin → Jobs (retries, stale leases, retention).
 | Symptom | Check |
 | --- | --- |
 | Login fails / "untrusted origin" | `BETTER_AUTH_URL` & `BETTER_AUTH_TRUSTED_ORIGINS` vs the URL you browse; proxy forwards `Host` + `X-Forwarded-Proto`. |
-| Health badge red / no completions | `GET /api/lemonade/status`; `LEMONADE_BASE_URL` reachable from the app container (`docker compose exec yasha wget -qO- $LEMONADE_BASE_URL/v1/health`). |
-| Admin model actions → 503 | Expected when `ADMIN_ALLOW_MUTATIONS=false` (intentional on shared backends). |
+| Health badge red / no completions | `GET /api/backend/status` (per-provider); each provider's base URL reachable from the app container (`docker compose exec yasha wget -qO- <base>/v1/health`). |
+| Admin model actions → 503 | Expected when `ADMIN_ALLOW_BACKEND_MUTATIONS=false` (intentional on shared backends); → 501 on providers without a management console (plain OpenAI-compatible). |
 | 429 responses | In-app limiter (`*_PER_MIN` env knobs) or your proxy's limits. |
 | Android build links fail | APK builder needs the toolchain image (not a slim variant) and disk space under `/data`. |
 | Logs | `docker compose logs -f yasha` / `… logs lemonade caddy`. |

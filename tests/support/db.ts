@@ -15,6 +15,6 @@ export function setSetting(key: string, value: string): void {
   invalidateSettingsCache();
 }
 
-export function setFastModel(id = "fast-model.test"): void {
+export function setFastModel(id = "default:fast-model.test"): void {
   setSetting("fast_model", id);
 }

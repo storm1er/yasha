@@ -14,15 +14,21 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { isChatCapable } from "@/lib/chat-models-filter";
 import { ModelOptionsDialog } from "@/components/settings/model-options-dialog";
 import { ChatLimitsCard } from "@/components/settings/chat-limits-card";
 import { McpCard } from "@/components/settings/mcp-card";
-import { ModelSelect } from "@/components/settings/model-select";
+import { fetchModelOptions, ModelSelect, type ModelOption } from "@/components/settings/model-select";
+import { CatalogCard, ProvidersCard, apiJson, type ProviderRow } from "@/components/settings/providers-card";
 import { cn } from "@/lib/utils";
 
-async function fetchModelRows(): Promise<{ rows: ModelRow[]; mutationsEnabled: boolean }> {
-  const res = await fetch("/api/admin/models", { cache: "no-store" });
+// The Backend tab drives every control-plane call for the SELECTED provider
+// (docs/provider-plan.md M3, `?provider=`).
+function adminUrl(path: string, providerId: string): string {
+  return `${path}${path.includes("?") ? "&" : "?"}provider=${encodeURIComponent(providerId)}`;
+}
+
+async function fetchModelRows(providerId: string): Promise<{ rows: ModelRow[]; mutationsEnabled: boolean }> {
+  const res = await fetch(adminUrl("/api/admin/models", providerId), { cache: "no-store" });
   if (!res.ok) throw new Error(String(res.status));
   const data = (await res.json()) as { models: ModelRow[]; mutations_enabled?: boolean };
   return {
@@ -188,7 +194,7 @@ function StatBar({
 
 // ── Server card ───────────────────────────────────────────────────────────────
 
-function ServerCard() {
+function ServerCard({ providerId }: { providerId: string }) {
   const t = useTranslations("admin");
   const [data, setData] = useState<ServerData | null>(null);
   const [failed, setFailed] = useState(false);
@@ -196,7 +202,7 @@ function ServerCard() {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch("/api/admin/server", { cache: "no-store" });
+      const res = await fetch(adminUrl("/api/admin/server", providerId), { cache: "no-store" });
       if (!res.ok) {
         setFailed(true);
         return;
@@ -207,7 +213,7 @@ function ServerCard() {
     } catch {
       setFailed(true);
     }
-  }, []);
+  }, [providerId]);
 
   useEffect(() => {
     const initial = window.setTimeout(() => void load(), 0);
@@ -320,12 +326,14 @@ type SortDir = "asc" | "desc";
 type Feedback = { kind: "ok" | "error"; text: string };
 
 function ModelsCard({
+  providerId,
   rows,
   failed,
   mutations,
   onMutationsDisabled,
   refreshModels,
 }: {
+  providerId: string;
   rows: ModelRow[] | null;
   failed: boolean;
   mutations: MutationState;
@@ -390,7 +398,7 @@ function ModelsCard({
     setBusyAction(busyKey);
     setError(false);
     try {
-      const res = await fetch("/api/admin/actions", {
+      const res = await fetch(adminUrl("/api/admin/actions", providerId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action, model: modelId }),
@@ -588,10 +596,12 @@ function ModelsCard({
 // ── Registry card ─────────────────────────────────────────────────────────────
 
 function RegistryCard({
+  providerId,
   mutations,
   onMutationsDisabled,
   refreshModels,
 }: {
+  providerId: string;
   mutations: MutationState;
   onMutationsDisabled: () => void;
   refreshModels: () => void;
@@ -617,7 +627,7 @@ function RegistryCard({
     setExpanded(null);
     setVariants({});
     try {
-      const res = await fetch(`/api/admin/registry?q=${encodeURIComponent(q)}`, { cache: "no-store" });
+      const res = await fetch(adminUrl(`/api/admin/registry?q=${encodeURIComponent(q)}`, providerId), { cache: "no-store" });
       if (!res.ok) throw new Error(String(res.status));
       const data = (await res.json()) as { results?: unknown };
       setResults(Array.isArray(data.results) ? (data.results as RegistryEntry[]) : []);
@@ -642,7 +652,7 @@ function RegistryCard({
     if (existing && existing !== "error") return;
     setVariants((m) => ({ ...m, [id]: "loading" }));
     try {
-      const res = await fetch(`/api/admin/variants?name=${encodeURIComponent(id)}`, { cache: "no-store" });
+      const res = await fetch(adminUrl(`/api/admin/variants?name=${encodeURIComponent(id)}`, providerId), { cache: "no-store" });
       if (!res.ok) throw new Error(String(res.status));
       const data = (await res.json()) as {
         variants?: unknown;
@@ -700,7 +710,7 @@ function RegistryCard({
     let alive = true;
     void (async () => {
       try {
-        const res = await fetch("/api/admin/downloads", { cache: "no-store" });
+        const res = await fetch(adminUrl("/api/admin/downloads", providerId), { cache: "no-store" });
         if (!res.ok || !alive) return;
         const data = (await res.json()) as unknown;
         const list = Array.isArray(data)
@@ -734,7 +744,7 @@ function RegistryCard({
     return () => {
       alive = false;
     };
-  }, []);
+  }, [providerId]);
 
   // Poll server-owned download jobs while pulls are tracked; finalize terminal
   // states (completed → refresh models, cancelled → remove from upstream).
@@ -745,7 +755,7 @@ function RegistryCard({
     const tick = async () => {
       let list: DownloadJob[] | null = null;
       try {
-        const res = await fetch("/api/admin/downloads", { cache: "no-store" });
+        const res = await fetch(adminUrl("/api/admin/downloads", providerId), { cache: "no-store" });
         if (res.ok) {
           const data = (await res.json()) as unknown;
           list = Array.isArray(data)
@@ -806,7 +816,7 @@ function RegistryCard({
         }
         if (changed) setJobs(next);
         for (const id of removeIds) {
-          void fetch("/api/admin/downloads-control", {
+          void fetch(adminUrl("/api/admin/downloads-control", providerId), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ id, action: "remove" }),
@@ -828,7 +838,7 @@ function RegistryCard({
 
   async function controlJob(id: string, action: "cancel") {
     try {
-      const res = await fetch("/api/admin/downloads-control", {
+      const res = await fetch(adminUrl("/api/admin/downloads-control", providerId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, action }),
@@ -886,7 +896,7 @@ function RegistryCard({
       }
       if (info.labels.includes("embeddings")) body.embedding = true;
       if (info.labels.includes("reranking")) body.reranking = true;
-      const res = await fetch("/api/admin/actions", {
+      const res = await fetch(adminUrl("/api/admin/actions", providerId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -1165,11 +1175,23 @@ function RegistryCard({
 
 // ── Chat models card ──────────────────────────────────────────────────────────
 
-function ChatModelsCard({ rows }: { rows: ModelRow[] }) {
+function ChatModelsCard() {
   const t = useTranslations("admin");
   const [fast, setFast] = useState("");
   const [smart, setSmart] = useState("");
+  const [options, setOptions] = useState<ModelOption[]>([]);
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      const ids = await fetchModelOptions();
+      if (alive) setOptions(ids);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -1191,15 +1213,6 @@ function ChatModelsCard({ rows }: { rows: ModelRow[] }) {
       alive = false;
     };
   }, []);
-
-  const options = useMemo(
-    () =>
-      rows
-        .filter((m) => isChatCapable(m))
-        .map((m) => m.id as string)
-        .sort((a, b) => a.localeCompare(b)),
-    [rows]
-  );
 
   async function save() {
     const fastValue = fast.trim();
@@ -1286,14 +1299,15 @@ function ChatModelsCard({ rows }: { rows: ModelRow[] }) {
 
 // ── Panel ─────────────────────────────────────────────────────────────────────
 
-export function AdminPanel() {
+/** Lemonade control-plane console for the selected provider (M3). */
+function LemonadeConsole({ providerId }: { providerId: string }) {
   const [models, setModels] = useState<ModelRow[] | null>(null);
   const [modelsFailed, setModelsFailed] = useState(false);
   const [mutations, setMutations] = useState<MutationState>("unknown");
 
   const refreshModels = useCallback(async () => {
     try {
-      const { rows } = await fetchModelRows();
+      const { rows } = await fetchModelRows(providerId);
       setModels(rows);
     } catch {
       setModelsFailed(true);
@@ -1306,7 +1320,7 @@ export function AdminPanel() {
     let alive = true;
     void (async () => {
       try {
-        const { rows, mutationsEnabled } = await fetchModelRows();
+        const { rows, mutationsEnabled } = await fetchModelRows(providerId);
         if (!alive) return;
         setModels(rows);
         setMutations(mutationsEnabled ? "enabled" : "disabled");
@@ -1320,9 +1334,10 @@ export function AdminPanel() {
   }, []);
 
   return (
-    <div className="flex flex-col gap-4" data-testid="admin-panel">
-      <ServerCard />
+    <>
+      <ServerCard providerId={providerId} />
       <ModelsCard
+        providerId={providerId}
         rows={models}
         failed={modelsFailed}
         mutations={mutations}
@@ -1330,11 +1345,62 @@ export function AdminPanel() {
         refreshModels={() => void refreshModels()}
       />
       <RegistryCard
+        providerId={providerId}
         mutations={mutations}
         onMutationsDisabled={() => setMutations("disabled")}
         refreshModels={() => void refreshModels()}
       />
-      <ChatModelsCard rows={models ?? []} />
+    </>
+  );
+}
+
+/**
+ * Backend tab (Q21): provider CRUD + catalog capability overrides; the
+ * Lemonade console renders only when the selected provider offers one
+ * (Q10). Chat model choice, limits and MCP are global and stay below.
+ */
+export function AdminPanel() {
+  const t = useTranslations("admin");
+  const [providers, setProviders] = useState<ProviderRow[] | null>(null);
+  const [selectedId, setSelectedId] = useState("");
+  const [providersReload, setProvidersReload] = useState(0);
+
+  useEffect(() => {
+    let alive = true;
+    apiJson<{ providers: ProviderRow[] }>("/api/backend/providers")
+      .then((d) => {
+        if (!alive) return;
+        setProviders(d.providers);
+        setSelectedId((cur) => (cur && d.providers.some((p) => p.id === cur) ? cur : d.providers[0]?.id ?? ""));
+      })
+      .catch(() => {
+        if (alive) setProviders([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [providersReload]);
+
+  const selected = providers?.find((p) => p.id === selectedId) ?? null;
+
+  return (
+    <div className="flex flex-col gap-4" data-testid="admin-panel">
+      {providers !== null && (
+        <ProvidersCard
+          providers={providers}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
+          onChanged={() => setProvidersReload((n) => n + 1)}
+        />
+      )}
+      {selected && selected.type !== "lemonade" && (
+        <p className="text-sm text-muted-foreground" data-testid="backend-no-console">
+          {t("noConsole")}
+        </p>
+      )}
+      {selected && <CatalogCard providerId={selected.id} />}
+      {selected?.type === "lemonade" && <LemonadeConsole key={selected.id} providerId={selected.id} />}
+      <ChatModelsCard />
       <ChatLimitsCard />
       <McpCard />
     </div>

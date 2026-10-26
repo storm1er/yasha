@@ -32,7 +32,7 @@ function curlChat(baseUrl: string) {
   -H "Authorization: Bearer $YASHA_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "openrouter.free",
+    "model": "default:gemma-3n-e4b-it",
     "stream": true,
     "messages": [{ "role": "user", "content": "Hello!" }]
   }'`;
@@ -64,7 +64,7 @@ curl -s -X POST ${origin}/api/chat/messages/<messageId>/transcribe -b "$SESSION_
 }
 
 const PY_STREAM = `stream = client.chat.completions.create(
-    model="openrouter.free",
+    model="default:gemma-3n-e4b-it",
     messages=[{"role": "user", "content": "Hello!"}],
     stream=True,
 )
@@ -125,6 +125,7 @@ function ApiDocsContent({ origin }: { origin: string }) {
         </span>
       </div>
       <p className="pt-1 text-xs text-muted-foreground">{t("originNote", { origin })}</p>
+      <p className="pt-1 text-xs text-muted-foreground">{t("modelIdNote")}</p>
 
       <Section title={t("curlTitle")}>
         <CodeSample lang="bash" code={curlModels(baseUrl)} />

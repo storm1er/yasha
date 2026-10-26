@@ -8,7 +8,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { messages } from "@/lib/db/schema";
 import { smartModel } from "@/lib/settings";
-import { isAudioInputModel } from "@/lib/audio-input";
+import { ensureCatalog, isAudioInputModel } from "@/lib/provider/catalog";
 import { audioInputPart } from "@/lib/chat-attachments";
 import { splitAudioDataUrl } from "@/lib/audio-split";
 import { completeOnce, type JobHandler } from "./worker";
@@ -51,6 +51,7 @@ export const handleAudioTranscription: JobHandler = async ({ payload, cfg, signa
   }
   // Defense in depth: the enqueue sites already gate on this. Audio captions
   // run on the audio-compatible fast model only — never the smart model.
+  await ensureCatalog(); // capability flags come from the synced catalog rows
   const model = cfg.model;
   if (!model || !isAudioInputModel(model) || model === smartModel()) {
     return { transcribed: false, skipped: "model_not_compatible" };

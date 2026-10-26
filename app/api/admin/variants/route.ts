@@ -1,11 +1,11 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { requireAdmin, upstreamErrorResponse } from "@/lib/admin-auth";
-import { pullVariants } from "@/lib/lemonade-admin";
+import { requireAdmin, controlPlaneErrorResponse, providerParam, upstreamErrorResponse } from "@/lib/admin-auth";
+import { controlPlaneForAdmin } from "@/lib/provider/registry";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** GET /api/admin/variants?name= → Lemonade pull-variants passthrough (admin only). */
+/** GET /api/admin/variants?name= → control-plane pull-variants passthrough (admin only). */
 export async function GET(req: NextRequest) {
   const guard = await requireAdmin();
   if (!guard.ok) return guard.response;
@@ -15,8 +15,11 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "invalid_name" }, { status: 400 });
   }
 
+  const lookup = controlPlaneForAdmin(providerParam(req));
+  if (!lookup.ok) return controlPlaneErrorResponse(lookup);
+
   try {
-    const json = await pullVariants(name);
+    const json = await lookup.controlPlane.pullVariants(name);
     return NextResponse.json(json);
   } catch {
     return upstreamErrorResponse();

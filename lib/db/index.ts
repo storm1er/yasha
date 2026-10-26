@@ -43,6 +43,8 @@ export function ensureReady(): Promise<void> {
         .run();
       const { ensureFts } = await import("@/lib/search/fts");
       ensureFts();
+      const { seedProvidersFromEnv } = await import("@/lib/provider/registry");
+      seedProvidersFromEnv();
       const { seedBootstrapAdmin } = await import("./bootstrap");
       await seedBootstrapAdmin();
       const { seedMcpBuiltin } = await import("./bootstrap");
