@@ -5,6 +5,11 @@ generated automatically by CI from Conventional Commits landing on `main`
 ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)).
 
+## [0.2.5] - 2026-10-27
+
+### Bug Fixes
+- Surface and warn on tool-output truncation (issue #8) (7adeb4e)
+
 ## [0.2.4] - 2026-10-26
 
 ### Bug Fixes
