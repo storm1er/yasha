@@ -66,6 +66,8 @@ data class ToolMetaDto(
     // Full call detail so the tool card is openable/readable (mirrors the web).
     val args: String? = null,
     val result: String? = null,
+    // Result was cut at the server-side cap → amber warn chip (issue #8).
+    val truncated: Boolean = false,
 )
 
 // GET/POST /api/mcp/prefs (per-user tool-use opt-out; null = follow instance).
@@ -98,6 +100,7 @@ sealed interface ChatEvent {
         val status: String,
         val args: String? = null,
         val result: String? = null,
+        val truncated: Boolean = false,
     ) : ChatEvent
     data class Done(val aborted: Boolean) : ChatEvent
     data class Failure(val code: String) : ChatEvent

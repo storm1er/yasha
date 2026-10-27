@@ -221,6 +221,7 @@
     <string name="tool_running">running</string>
     <string name="tool_done">done</string>
     <string name="tool_error">error</string>
+    <string name="tool_truncated">truncated</string>
     <string name="tool_args">Arguments</string>
     <string name="tool_result">Result</string>
     <string name="tool_no_result">Waiting for the tool to finish…</string>

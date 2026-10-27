@@ -448,6 +448,16 @@ describe("bridge", () => {
     const out = await runToolCall({ serverId: "fb", tool: "big", title: "t", userId: "u-test" }, "{}");
     expect(out.ok).toBe(true);
     expect(out.content).toContain("[truncated]");
+    expect(out.truncated).toBe(true);
+  });
+
+  it("flags nothing on an under-limit result", async () => {
+    addServerRow("fb2", "https://x.test");
+    setTransportFactory(fakeFactory());
+    const out = await runToolCall({ serverId: "fb2", tool: "echo", title: "t", userId: "u-test" }, JSON.stringify({ value: "x" }));
+    expect(out.ok).toBe(true);
+    expect(out.content).not.toContain("[truncated]");
+    expect(out.truncated).toBeFalsy();
   });
 
   it("maps timeouts and aborts to error outcomes", async () => {

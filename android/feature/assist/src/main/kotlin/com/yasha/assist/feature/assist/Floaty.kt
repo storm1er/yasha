@@ -346,7 +346,7 @@ fun FloatyScreen(onDismiss: () -> Unit) {
                         when (ev) {
                             is ChatEvent.ThreadId -> askThreadId = ev.id
                             is ChatEvent.Delta -> buf.append(ev.text)
-                            is ChatEvent.ToolProgress -> askTools = askTools.upsertTool(ev.server, ev.name, ev.status)
+                            is ChatEvent.ToolProgress -> askTools = askTools.upsertTool(ev.server, ev.name, ev.status, ev.truncated)
                             is ChatEvent.Failure -> answerError = ev.code
                             is ChatEvent.Done -> {}
                         }
@@ -548,10 +548,10 @@ fun FloatyScreen(onDismiss: () -> Unit) {
 
 // Separate composable so 150ms answer flushes don't recompose the full-screen
 // screenshot image + selection canvas above it.
-data class AskTool(val server: String, val name: String, val status: String)
+data class AskTool(val server: String, val name: String, val status: String, val truncated: Boolean = false)
 
-internal fun List<AskTool>.upsertTool(server: String, name: String, status: String): List<AskTool> {
-    val tool = AskTool(server, name, status)
+internal fun List<AskTool>.upsertTool(server: String, name: String, status: String, truncated: Boolean = false): List<AskTool> {
+    val tool = AskTool(server, name, status, truncated)
     val idx = indexOfLast { it.server == server && it.name == name }
     return if (idx >= 0) toMutableList().also { it[idx] = tool } else this + tool
 }
@@ -600,12 +600,19 @@ private fun AnswerCard(
                 if (tools.isNotEmpty()) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         tools.forEach { tool ->
-                            val label = when (tool.status) {
-                                "running" -> stringResource(R.string.tool_running)
-                                "error" -> stringResource(R.string.tool_error)
+                            // Amber warn state when the server cut the output (issue #8).
+                            val warn = tool.truncated && tool.status != "error"
+                            val label = when {
+                                tool.status == "running" -> stringResource(R.string.tool_running)
+                                tool.status == "error" -> stringResource(R.string.tool_error)
+                                warn -> stringResource(R.string.tool_truncated)
                                 else -> stringResource(R.string.tool_done)
                             }
-                            val tint = if (tool.status == "error") Color(0xFFFF8A80) else Color(0xFF9AA7B0)
+                            val tint = when {
+                                tool.status == "error" -> Color(0xFFFF8A80)
+                                warn -> Color(0xFFFFB74D)
+                                else -> Color(0xFF9AA7B0)
+                            }
                             Row(
                                 Modifier.clip(RoundedCornerShape(999.dp)).background(Color(0x22FFFFFF))
                                     .padding(horizontal = 10.dp, vertical = 5.dp),

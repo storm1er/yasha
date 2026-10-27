@@ -58,6 +58,20 @@ class ChatEventsTest {
     }
 
     @Test
+    fun `tool progress carries the truncation flag (issue 8)`() {
+        assertEquals(
+            ChatEvent.ToolProgress("ketch", "search", "done", "{}", "…", truncated = true),
+            ChatEvents.parse(
+                "{\"tool\":{\"server\":\"ketch\",\"name\":\"search\",\"status\":\"done\"," +
+                    "\"args\":\"{}\",\"result\":\"…\",\"truncated\":true}}",
+            ),
+        )
+        // Absent flag = not truncated: pre-issue events parse unchanged.
+        val plain = ChatEvents.parse("{\"tool\":{\"server\":\"k\",\"name\":\"n\",\"status\":\"done\"}}")
+        assertEquals(false, (plain as ChatEvent.ToolProgress).truncated)
+    }
+
+    @Test
     fun `garbage and unrelated json map to null`() {
         assertNull(ChatEvents.parse("not json"))
         assertNull(ChatEvents.parse("{\"other\":1}"))

@@ -59,6 +59,7 @@ object ChatEvents {
                         status = tool["status"]?.jsonPrimitive?.content.orEmpty(),
                         args = tool["args"]?.jsonPrimitive?.contentOrNull,
                         result = tool["result"]?.jsonPrimitive?.contentOrNull,
+                        truncated = tool["truncated"]?.jsonPrimitive?.booleanOrNull == true,
                     )
                 }
                 else -> null

@@ -56,7 +56,9 @@ export async function buildToolset(userId: string): Promise<Toolset> {
   return { specs, handles };
 }
 
-export type ToolOutcome = { content: string; ok: boolean; ms: number };
+/** `truncated` is true when the raw output exceeded `mcp.toolResultMaxChars`
+ *  and the `[truncated]` marker was appended (drives the amber warn chip). */
+export type ToolOutcome = { content: string; ok: boolean; ms: number; truncated?: boolean };
 
 /**
  * Execute one OpenAI-flavoured tool call. Never throws: failures come back as
@@ -92,13 +94,15 @@ export async function runToolCall(handle: ToolHandle, argsJson: string, signal?:
       )
       .join("\n");
     const maxChars = mcpToolResultMaxChars();
-    if (text.length > maxChars) text = `${text.slice(0, maxChars)}\n[truncated]`;
+    const truncated = text.length > maxChars;
+    if (truncated) text = `${text.slice(0, maxChars)}\n[truncated]`;
     const isError = res.isError === true;
     const body = neutralizedBlock(text || "(empty)");
     return {
       content: `${QUOTED_DATA_LINE}\n--- tool output (${handle.tool}) ---\n${body}`,
       ok: !isError,
       ms: Date.now() - started,
+      truncated,
     };
   } catch (err) {
     return {

@@ -29,6 +29,9 @@ export type ToolEvent = {
   args?: string;
   result?: string;
   ms?: number;
+  /** Present (true) only when the result was cut at `mcp.toolResultMaxChars`
+   *  — renders the amber warn chip live and after a thread reload. */
+  truncated?: boolean;
 };
 export type ToolRoundRecord = {
   server: string;
@@ -37,6 +40,7 @@ export type ToolRoundRecord = {
   ok: boolean;
   args: string;
   result: string;
+  truncated?: boolean;
 };
 
 /** Accumulates `delta.tool_calls` fragments (index-keyed, args concatenated). */
@@ -103,6 +107,8 @@ export async function dispatchToolCalls(
       }
       onEvent({ server: handle.serverId, name: handle.tool, status: "running", args: call.function.arguments });
       const out = await runToolCall(handle, call.function.arguments, signal);
+      // `truncated` is emitted only when true: unchanged turns stay byte-stable.
+      const truncatedFlag = out.truncated ? { truncated: true } : {};
       onEvent({
         server: handle.serverId,
         name: handle.tool,
@@ -110,10 +116,19 @@ export async function dispatchToolCalls(
         args: call.function.arguments,
         result: out.content,
         ms: out.ms,
+        ...truncatedFlag,
       });
       return {
         call,
-        record: { server: handle.serverId, name: handle.tool, ms: out.ms, ok: out.ok, args: call.function.arguments, result: out.content },
+        record: {
+          server: handle.serverId,
+          name: handle.tool,
+          ms: out.ms,
+          ok: out.ok,
+          args: call.function.arguments,
+          result: out.content,
+          ...truncatedFlag,
+        },
         content: out.content,
       };
     }),

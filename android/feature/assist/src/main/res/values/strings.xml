@@ -24,6 +24,7 @@
     <string name="tool_running">running</string>
     <string name="tool_done">done</string>
     <string name="tool_error">error</string>
+    <string name="tool_truncated">truncated</string>
     <string name="floaty_mic">Start voice input</string>
     <string name="floaty_listening">Listening… tap the mic to stop</string>
     <string name="floaty_mic_error">Microphone unavailable. Check app permissions.</string>

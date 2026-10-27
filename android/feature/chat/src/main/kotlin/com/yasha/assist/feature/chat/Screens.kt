@@ -507,17 +507,23 @@ private fun ToolChips(tools: List<UiTool>) {
     val runningLabel = stringResource(R.string.tool_running)
     val doneLabel = stringResource(R.string.tool_done)
     val errorLabel = stringResource(R.string.tool_error)
+    val truncatedLabel = stringResource(R.string.tool_truncated)
     // One chip per row (issue #2): inline chips overflowed narrow screens.
     Column(verticalArrangement = Arrangement.spacedBy(6.dp), horizontalAlignment = Alignment.Start) {
         tools.forEach { tool ->
             var expanded by remember(tool.server, tool.name) { mutableStateOf(false) }
-            val label = when (tool.status) {
-                "running" -> runningLabel
-                "error" -> errorLabel
+            // Amber warn state when the server cut the output (issue #8);
+            // errors keep the red tint.
+            val warn = tool.truncated && tool.status != "error"
+            val label = when {
+                tool.status == "running" -> runningLabel
+                tool.status == "error" -> errorLabel
+                warn -> truncatedLabel
                 else -> doneLabel
             }
-            val tint = when (tool.status) {
-                "error" -> MaterialTheme.colorScheme.error
+            val tint = when {
+                tool.status == "error" -> MaterialTheme.colorScheme.error
+                warn -> palette.warnAmber
                 else -> palette.disclaimer
             }
             val expandable = !tool.args.isNullOrEmpty() || tool.result != null

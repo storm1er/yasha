@@ -32,6 +32,8 @@ data class UiTool(
     // Full call detail (openable tool card); null until the server provides it.
     val args: String? = null,
     val result: String? = null,
+    // Server-side output truncation (issue #8) → amber warn chip.
+    val truncated: Boolean = false,
 )
 
 data class UiMessage(
@@ -264,7 +266,7 @@ class ChatViewModel(
                         error = null,
                         messages = r.value.messages.map { m ->
                             val uiTools = m.meta?.tools.orEmpty().map { t ->
-                                UiTool(t.server, t.name, if (t.ok) "done" else "error", t.args, t.result)
+                                UiTool(t.server, t.name, if (t.ok) "done" else "error", t.args, t.result, t.truncated)
                             }
                             UiMessage(
                                 id = m.id,
@@ -402,7 +404,7 @@ class ChatViewModel(
                     is ChatEvent.ToolProgress -> _state.update {
                         val msgs = it.messages.toMutableList()
                         val last = msgs.last()
-                        val tool = UiTool(ev.server, ev.name, ev.status, ev.args, ev.result)
+                        val tool = UiTool(ev.server, ev.name, ev.status, ev.args, ev.result, ev.truncated)
                         msgs[msgs.lastIndex] = last.copy(
                             segments = TurnSegments.applyTool(last.segments, tool),
                         )

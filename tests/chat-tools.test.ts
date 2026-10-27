@@ -243,6 +243,39 @@ describe("chat tool loop", () => {
     expect(meta).toMatchObject({ parts: [{ type: "tools", count: 1 }, { type: "text", text: "Answer" }] });
   });
 
+  it("truncated tool result: flag on the SSE event and the persisted meta round", async () => {
+    vi.mocked(runToolCall).mockResolvedValue({ content: "CUT", ok: true, ms: 5, truncated: true });
+    let n = 0;
+    mock.route(CHAT, () => {
+      n += 1;
+      return n === 1
+        ? sseToolCalls([{ id: "t0", name: "mcp__ketch__search", args: '{"q":"x"}' }])
+        : sseCompletion("Answer");
+    });
+    const res = await postChat({});
+    const events = await drain(res);
+    expect(events[2]).toEqual({
+      tool: { server: "ketch", name: "search", status: "done", args: '{"q":"x"}', result: "CUT", ms: 5, truncated: true },
+    });
+    const threadId = events[0].threadId as string;
+    const row = assistantRows(threadId)[0];
+    const meta = JSON.parse(row.metaJson!) as { tools: Record<string, unknown>[] };
+    expect(meta.tools[0]).toMatchObject({ server: "ketch", name: "search", ok: true, result: "CUT", truncated: true });
+    // History rebuild keeps the flag: stored rounds survive parse/synthesis.
+    const rounds = parseToolRounds(row.metaJson);
+    expect(rounds).toHaveLength(1);
+    expect(rounds[0].truncated).toBe(true);
+  });
+
+  it("non-truncated rounds carry no flag (payloads stay byte-stable)", async () => {
+    const dispatched = await dispatchToolCalls(
+      [{ id: "t0", type: "function", function: { name: "mcp__ketch__search", arguments: "{}" } }],
+      toolset.handles,
+      () => undefined,
+    );
+    expect(dispatched.records[0]).not.toHaveProperty("truncated");
+  });
+
   it("multi-round turn: meta.parts keeps the text/tool execution order", async () => {
     let n = 0;
     mock.route(CHAT, () => {
