@@ -3,6 +3,8 @@
 // ControlPlane is the OPTIONAL admin capability (Lemonade today). Adapters
 // live in lib/provider/; consumers resolve them through lib/provider/registry.
 
+import type { LanguageModelV4 } from "@ai-sdk/provider";
+
 export const PROVIDER_TYPES = ["lemonade", "openai_compatible"] as const;
 export type ProviderType = (typeof PROVIDER_TYPES)[number];
 
@@ -26,6 +28,13 @@ export interface ChatProvider {
   readonly baseUrl: string;
   /** POST {base}/v1/chat/completions with an assembled OpenAI body. */
   completion(body: Record<string, unknown>, signal: AbortSignal): Promise<Response>;
+  /**
+   * AI SDK language model bound to this provider's data plane (M1): chat
+   * completions only, usage included. The Lemonade plane stays keyless (the
+   * row's key belongs to the admin plane); openai_compatible authenticates
+   * completions with its row's key.
+   */
+  languageModel(upstreamModelId: string): LanguageModelV4;
   /** Chat-capable model list (TTL-cached, deduped upstream fetch). */
   listChatModels(): Promise<ChatModel[]>;
   /**

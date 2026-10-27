@@ -3,8 +3,9 @@
 // data-plane semantics. Run it with describeProviderContract(name, factory).
 
 import { describe, expect, it, vi } from "vitest";
+import { streamText } from "ai";
 import type { ChatProvider } from "@/lib/provider/types";
-import { json, mockLemonade } from "./lemonade";
+import { json, mockLemonade, sseChatCompletion } from "./lemonade";
 
 export type ProviderFactory = (id: string, baseUrl: string, apiKey: string | null) => ChatProvider;
 
@@ -81,6 +82,26 @@ export function describeProviderContract(name: string, make: ProviderFactory): v
       expect(call.headers["content-type"]).toBe("application/json");
       expect(JSON.parse(call.body!)).toEqual({ model: "m", messages: [], stream: true });
       expect(call.signal).toBe(controller.signal);
+    });
+
+    it("languageModel: memoized AI SDK model on the /v1 plane, usage included", async () => {
+      const provider = make("px", BASE, null);
+      const mock = mockLemonade();
+      mock.route("/v1/chat/completions", () =>
+        sseChatCompletion("sdk hi", { usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } })
+      );
+      const model = provider.languageModel("m1");
+      expect(provider.languageModel("m1")).toBe(model); // memoized per upstream id
+      const result = streamText({ model, prompt: "hi", maxRetries: 0 });
+      expect(await result.text).toBe("sdk hi");
+      expect(await result.totalUsage).toMatchObject({ inputTokens: 5, outputTokens: 2, totalTokens: 7 });
+      const call = mock.lastCall("/v1/chat/completions")!;
+      expect(call.method).toBe("POST");
+      expect(call.url).toBe(`${BASE}/v1/chat/completions`);
+      const body = JSON.parse(call.body!) as Record<string, unknown>;
+      expect(body.model).toBe("m1");
+      expect(body.stream).toBe(true);
+      expect(body.stream_options).toEqual({ include_usage: true });
     });
   });
 }

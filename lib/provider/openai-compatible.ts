@@ -9,6 +9,8 @@
 // in the `models` table (M2b), never guessed from the name.
 
 import { ChatModelCache } from "./model-cache";
+import { AiModelFactory } from "./language-model";
+import type { LanguageModelV4 } from "@ai-sdk/provider";
 import type { ChatModel, ChatProvider, ControlPlane } from "./types";
 
 export class OpenAICompatProvider implements ChatProvider {
@@ -37,6 +39,14 @@ export class OpenAICompatProvider implements ChatProvider {
       body: JSON.stringify(body),
       signal,
     });
+  }
+
+  private aiModels: AiModelFactory | null = null;
+
+  /** AI SDK model with the row's Bearer key on completions (M1); memoized per id. */
+  languageModel(upstreamModelId: string): LanguageModelV4 {
+    this.aiModels ??= new AiModelFactory(this.id, this.baseUrl, this.apiKey);
+    return this.aiModels.model(upstreamModelId);
   }
 
   /** GET /v1/models → every entry with a string id (no capability labels). */

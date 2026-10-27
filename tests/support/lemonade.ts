@@ -152,6 +152,24 @@ export function sseCompletion(
   return new Response(body, { headers: { "content-type": "text/event-stream" } });
 }
 
+/** Fully realistic chat-completions SSE: chunk envelope + role delta +
+ *  finish_reason + optional usage (the AI SDK compat parser flags streams
+ *  missing finish_reason — M0 spike finding, use this for SDK-driven tests). */
+export function sseChatCompletion(
+  text: string,
+  opts: { usage?: Record<string, number>; reasoning?: string } = {}
+): Response {
+  const env = { id: "chatcmpl-1", object: "chat.completion.chunk", created: 0, model: "mock" };
+  const line = (p: Record<string, unknown>) => `data: ${JSON.stringify({ ...env, ...p })}\n\n`;
+  let body = line({ choices: [{ index: 0, delta: { role: "assistant", content: "" } }] });
+  if (opts.reasoning) body += line({ choices: [{ index: 0, delta: { reasoning: opts.reasoning } }] });
+  if (text) body += line({ choices: [{ index: 0, delta: { content: text } }] });
+  body += line({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] });
+  if (opts.usage) body += line({ choices: [], usage: opts.usage });
+  body += "data: [DONE]\n\n";
+  return new Response(body, { headers: { "content-type": "text/event-stream" } });
+}
+
 /** Scripted chat-completions SSE responses (stream=true upstream), one reply
  *  per call in order; falls back to the last entry. */
 export function scriptedCompletions(texts: (string | Error)[]): (url: URL) => Response {
