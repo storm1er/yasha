@@ -178,7 +178,7 @@ export function scriptedCompletions(texts: (string | Error)[]): (url: URL) => Re
     const t = texts[Math.min(n, texts.length - 1)];
     n += 1;
     if (t instanceof Error) throw t;
-    return sseCompletion(t);
+    return sseChatCompletion(t);
   };
 }
 
@@ -189,6 +189,8 @@ export function streamResponse(): {
   pushText(text: string): void;
   pushPayload(payload: unknown): void;
   pushRaw(line: string): void;
+  /** Envelope-shaped finish_reason frame (what the AI SDK parser requires). */
+  pushFinish(reason?: string): void;
   done(): void;
   fail(err?: Error): void;
   attach(signal?: AbortSignal | null): void;
@@ -230,6 +232,21 @@ export function streamResponse(): {
     },
     pushRaw(line) {
       safe(() => controller.enqueue(enc.encode(line)));
+    },
+    pushFinish(reason = "stop") {
+      safe(() =>
+        controller.enqueue(
+          enc.encode(
+            sseLine({
+              id: "chatcmpl-1",
+              object: "chat.completion.chunk",
+              created: 0,
+              model: "mock",
+              choices: [{ index: 0, delta: {}, finish_reason: reason }],
+            })
+          )
+        )
+      );
     },
     done() {
       finish(() => {

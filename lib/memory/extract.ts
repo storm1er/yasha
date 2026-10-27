@@ -13,7 +13,7 @@ import {
   type MemoryKind,
   type MemorySource,
 } from "@/lib/db/schema";
-import { completeOnce, type JobHandler } from "@/lib/jobs/worker";
+import { completeOnce, errMessage, type JobHandler } from "@/lib/jobs/worker";
 import { getSettingInt } from "@/lib/settings";
 import { outputLanguageFor } from "@/lib/user-locale";
 import {
@@ -245,7 +245,7 @@ export const handleFactExtraction: JobHandler = async ({
     }
   } catch (err) {
     if (signal.aborted) throw err; // timeout/abort → retry the whole run
-    extractError = err instanceof Error ? err.message : String(err);
+    extractError = errMessage(err);
   }
   heartbeat();
 
@@ -289,7 +289,7 @@ export const handleFactExtraction: JobHandler = async ({
       }
     } catch (err) {
       if (signal.aborted) throw err;
-      mergeError = err instanceof Error ? err.message : String(err);
+      mergeError = errMessage(err);
     }
     heartbeat();
   }

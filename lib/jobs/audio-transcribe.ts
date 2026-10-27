@@ -11,7 +11,7 @@ import { smartModel } from "@/lib/settings";
 import { ensureCatalog, isAudioInputModel } from "@/lib/provider/catalog";
 import { audioInputPart } from "@/lib/chat-attachments";
 import { splitAudioDataUrl } from "@/lib/audio-split";
-import { completeOnce, type JobHandler } from "./worker";
+import { completeOnce, errMessage, type JobHandler } from "./worker";
 
 export const TRANSCRIBE_PROMPT =
   "Transcribe this audio verbatim in the language spoken. Output only the transcription — no commentary, no translation. If there is no speech, reply exactly [no speech].";
@@ -93,7 +93,7 @@ export const handleAudioTranscription: JobHandler = async ({ payload, cfg, signa
     });
     return { transcribed: true, chars: transcript.length };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = errMessage(err);
     writeMeta(messageId, { audioTranscript: null, audioTranscriptFailed: true, audioTranscriptError: message });
     return { transcribed: false, error: message };
   }
