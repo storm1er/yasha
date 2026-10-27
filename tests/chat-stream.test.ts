@@ -8,7 +8,8 @@ import { rawSqlite } from "./support/db";
 import { invalidateSettingsCache } from "@/lib/settings";
 import { adminUser, callRoute, makeRequest, sessionId, signUp, waitFor, type AdminUser, type TestUser } from "./support/app";
 import { setCurrentHeaders } from "./support/request-context";
-import { bindStream, mockLemonade, modelsResponse, sseCompletion, streamResponse, type LemonadeMock } from "./support/lemonade";
+import { bindStream, mockLemonade, modelsResponse, sseChatCompletion, streamResponse, type LemonadeMock } from "./support/lemonade";
+import { drainUi, uiData, uiErrorCode, uiText, uiThread, type UiChunk } from "./support/ui-stream";
 import { jobs, memories, messages, settings, threadSummaries, threads } from "@/lib/db/schema";
 import { buildMemoryContext } from "@/lib/memory/recall";
 import {
@@ -29,32 +30,24 @@ const untilAborted = (signal?: AbortSignal | null) =>
     signal.addEventListener("abort", () => resolve(), { once: true });
   });
 
-async function readEvents(res: Response, n: number): Promise<Record<string, unknown>[]> {
+/** Read UI chunks (data frames only) until `n` arrived. */
+async function readUi(res: Response, n: number): Promise<UiChunk[]> {
   const reader = res.body!.getReader();
   const dec = new TextDecoder();
-  let buf = "";
-  const out: Record<string, unknown>[] = [];
+  let leftover = "";
+  const out: UiChunk[] = [];
   while (out.length < n) {
     const { done, value } = await reader.read();
     if (done) break;
-    buf += dec.decode(value, { stream: true });
-    let i: number;
-    while ((i = buf.indexOf("\n\n")) >= 0 && out.length < n) {
-      const line = buf.slice(0, i).replace(/\r/g, "");
-      buf = buf.slice(i + 2);
-      if (line.startsWith("data: ") && line.slice(6) !== "[DONE]") out.push(JSON.parse(line.slice(6)));
+    const frames = (leftover + dec.decode(value, { stream: true })).split("\n\n");
+    leftover = frames.pop() ?? "";
+    for (const frame of frames) {
+      const payload = frame.startsWith("data:") ? frame.slice(frame.indexOf(":") + 1).trim() : "";
+      if (payload && payload !== "[DONE]") out.push(JSON.parse(payload) as UiChunk);
     }
   }
   reader.releaseLock();
   return out;
-}
-
-async function drain(res: Response): Promise<Record<string, unknown>[]> {
-  const text = await res.text();
-  return text
-    .split("\n\n")
-    .filter((l) => l.startsWith("data: ") && l !== "data: [DONE]")
-    .map((l) => JSON.parse(l.slice(6)) as Record<string, unknown>);
 }
 
 function chatBody(over: Record<string, unknown> = {}) {
@@ -124,10 +117,10 @@ describe("chat route validation", () => {
     res = await postChat(chatBody({ model: "   " }));
     expect((await res.json() as { error: string }).error).toBe("invalid_model");
     const mock = mockLemonade();
-    mock.route("/v1/chat/completions", () => sseCompletion("null model ok"));
+    mock.route("/v1/chat/completions", () => sseChatCompletion("null model ok"));
     res = await postChat(chatBody({ model: null })); // null → ignored, falls to default
     expect(res.status).toBe(200);
-    await drain(res);
+    await drainUi(res);
     let modelHits = 0;
     mock.route("/v1/models", () => {
       modelHits += 1;
@@ -172,14 +165,14 @@ describe("chat happy path (new thread)", () => {
   it("streams deltas, persists both messages, enqueues after_persist jobs", async () => {
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }, { id: "vision-model.test", vision: true }]));
-    mock.route(CHAT, () => sseCompletion("Hi !", { usage: { total_tokens: 7 }, reasoning: "secret thoughts" }));
+    mock.route(CHAT, () => sseChatCompletion("Hi !", { usage: { prompt_tokens: 4, completion_tokens: 3, total_tokens: 7 }, reasoning: "secret thoughts" }));
     const res = await postChat(chatBody({ message: "remember the milk" }));
-    const events = await drain(res);
-    expect(events[0]).toEqual({ threadId: expect.any(String) });
-    expect(events.some((e) => e.c === "Hi !")).toBe(true);
-    expect(events.some((e) => "reasoning" in (e as object))).toBe(false);
-    expect(events.at(-1)).toEqual({ done: true });
-    const threadId = (events[0] as { threadId: string }).threadId;
+    const chunks = await drainUi(res);
+    expect(chunks[0]).toEqual({ type: "data-thread", data: { threadId: expect.any(String) } });
+    expect(uiText(chunks)).toBe("Hi !");
+    expect(chunks.some((c) => c.type.startsWith("reasoning"))).toBe(false);
+    expect(uiErrorCode(chunks)).toBeUndefined();
+    const threadId = uiThread(chunks);
     const thread = db.select().from(threads).where(eq(threads.id, threadId)).get()!;
     expect(thread.title).toBe("remember the milk");
     expect(thread.model).toBe("default:fast-model.test");
@@ -193,7 +186,7 @@ describe("chat happy path (new thread)", () => {
     expect(db.select().from(jobs).where(eq(jobs.type, "memory.thread_summary")).all().length).toBe(0);
     expect(hasInFlightGeneration(user.userId)).toBe(false);
     // prompt got the model + messages with stamped dates
-    const sent = JSON.parse(mock.lastCall(CHAT)!.body!) as { messages: { role: string; content: string }[] };
+    const sent = JSON.parse(mock.lastCall(CHAT)!.body!) as { messages: { role: string; content: unknown }[] };
     expect(sent.messages.at(-1)!.role).toBe("user");
     expect(sent.messages.at(-1)!.content).toMatch(/^\[\d{4}-\d{2}-\d{2}\] remember the milk$/);
   });
@@ -201,10 +194,10 @@ describe("chat happy path (new thread)", () => {
   it("image-only message creates an “Image” thread", async () => {
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
-    mock.route(CHAT, () => sseCompletion("nice pic"));
+    mock.route(CHAT, () => sseChatCompletion("nice pic"));
     const png = `data:image/png;base64,${Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString("base64")}`;
     const res = await postChat({ message: "", attachments: [png] });
-    await drain(res);
+    await drainUi(res);
     const th = db.select().from(threads).all()[0];
     expect(th.title).toBe("Image");
     const um = userMessages(th.id)[0];
@@ -219,21 +212,21 @@ describe("chat happy path (new thread)", () => {
     db.insert(threads).values({ id: "th-blank-model", userId: user.userId, model: "  ", title: "x", createdAt: new Date(t), updatedAt: new Date(t) }).run();
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }, { id: "other-model.test" }]));
-    mock.route(CHAT, () => sseCompletion("ok"));
+    mock.route(CHAT, () => sseChatCompletion("ok"));
     let res = await postChat(chatBody({ threadId: "th-blank-model" }));
-    await drain(res);
+    await drainUi(res);
     let sent = JSON.parse(mock.lastCall(CHAT)!.body!) as { model: string };
     expect(sent.model).toBe("fast-model.test"); // blank thread.model → defaultPick
 
     res = await postChat(chatBody({ threadId: "th-blank-model", model: "default:other-model.test" }));
-    await drain(res);
+    await drainUi(res);
     sent = JSON.parse(mock.lastCall(CHAT)!.body!) as { model: string };
     expect(sent.model).toBe("other-model.test");
     expect(db.select().from(threads).where(eq(threads.id, "th-blank-model")).get()!.model).toBe("default:other-model.test");
 
     // same model again → skip update branch
     res = await postChat(chatBody({ threadId: "th-blank-model", model: "default:other-model.test" }));
-    await drain(res);
+    await drainUi(res);
     expect(db.select().from(threads).where(eq(threads.id, "th-blank-model")).get()!.model).toBe("default:other-model.test");
   });
 
@@ -248,11 +241,14 @@ describe("chat happy path (new thread)", () => {
     db.insert(memories).values({ id: "mem1", userId: user.userId, kind: "fact", text: "The user rides bikes", source: "derived", pinned: false, createdAt: new Date(t), updatedAt: new Date(t) }).run();
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
-    mock.route(CHAT, () => sseCompletion("sure"));
+    mock.route(CHAT, () => sseChatCompletion("sure"));
     const res = await postChat(chatBody({ threadId: "th-window", message: "and now?" }));
-    await drain(res);
-    const sent = JSON.parse(mock.lastCall(CHAT)!.body!) as { messages: { role: string; content: string }[] };
-    const sys = sent.messages.filter((m) => m.role === "system").map((m) => m.content).join("\n");
+    await drainUi(res);
+    const sent = JSON.parse(mock.lastCall(CHAT)!.body!) as { messages: { role: string; content: unknown }[] };
+    const sys = sent.messages
+      .filter((m) => m.role === "system")
+      .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+      .join("\n");
     expect(sys).toContain("<user_memories>");
     expect(sys).toContain("<thread_summary>");
     expect(sys).toContain("They talked about trains");
@@ -270,9 +266,9 @@ describe("chat happy path (new thread)", () => {
     db.insert(memories).values({ id: "memx", userId: user.userId, kind: "fact", text: "secret fact", source: "derived", pinned: false, createdAt: new Date(t), updatedAt: new Date(t) }).run();
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
-    mock.route(CHAT, () => sseCompletion("k"));
+    mock.route(CHAT, () => sseChatCompletion("k"));
     const res = await postChat(chatBody({ threadId: "th-nomem" }));
-    await drain(res);
+    await drainUi(res);
     const sent = JSON.parse(mock.lastCall(CHAT)!.body!) as { messages: { role: string }[] };
     expect(sent.messages.some((m) => m.role === "system")).toBe(false);
     expect(buildMemoryContext(user.userId, "secret")).toContain("secret fact"); // block exists, just not injected
@@ -288,9 +284,9 @@ describe("chat upstream failures", () => {
       throw new Error("ECONNREFUSED");
     });
     const res = await postChat(chatBody());
-    const events = await drain(res);
-    expect(events.some((e) => e.error === "upstream_connect")).toBe(true);
-    const um = userMessages((events[0] as { threadId: string }).threadId);
+    const chunks = await drainUi(res);
+    expect(uiErrorCode(chunks)).toBe("upstream_connect");
+    const um = userMessages(uiThread(chunks));
     expect(um.length).toBe(1);
     expect(um[0].metaJson).toContain('"error":"upstream_connect"');
     expect(hasInFlightGeneration(user.userId)).toBe(false);
@@ -301,9 +297,9 @@ describe("chat upstream failures", () => {
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
     mock.route(CHAT, () => new Response("nope", { status: 500 }));
     const res = await postChat(chatBody());
-    const events = await drain(res);
-    expect(events.some((e) => e.error === "upstream_status_500")).toBe(true);
-    const um = userMessages((events[0] as { threadId: string }).threadId);
+    const chunks = await drainUi(res);
+    expect(uiErrorCode(chunks)).toBe("upstream_status_500");
+    const um = userMessages(uiThread(chunks));
     expect(um.length).toBe(1);
     expect(um[0].metaJson).toContain('"error":"upstream_status_500"');
   });
@@ -319,15 +315,16 @@ describe("chat upstream failures", () => {
     const req = makeRequest({ method: "POST", path: "/api/chat", cookie: user.cookie, json: chatBody(), signal: ac.signal });
     setCurrentHeaders(req.headers);
     const res = await chatRoute.POST(req);
-    const first = await readEvents(res, 1); // threadId event arrives before fetch
-    const threadId = (first[0] as { threadId: string }).threadId;
+    const first = await readUi(res, 1); // data-thread arrives before fetch resolves
+    const threadId = uiThread(first);
     ac.abort();
     await waitFor(() => !hasInFlightGeneration(user.userId));
     await delay(20);
     expect(userMessages(threadId).length).toBe(1); // never generated → nothing to roll back
+    expect(assistantMessages(threadId).length).toBe(0);
   });
 
-  it("client abort while upstream returns non-2xx: keeps user message", async () => {
+  it("client abort while upstream returns non-2xx: keeps user message unannotated", async () => {
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
     mock.route(CHAT, async (_url, call) => {
@@ -348,12 +345,13 @@ describe("chat upstream failures", () => {
         text += dec.decode(value, { stream: true });
       }
     })();
-    await waitFor(() => text.includes("threadId"));
+    await waitFor(() => text.includes("data-thread"));
     ac.abort();
     await pump;
-    expect(text).toContain('"error":"upstream_status_500"');
     const threadId = /"threadId":"([^"]+)"/.exec(text)![1];
     expect(userMessages(threadId).length).toBe(1); // client was gone → no rollback
+    expect(userMessages(threadId)[0].metaJson ?? "").not.toContain("error");
+    expect(assistantMessages(threadId).length).toBe(0);
   });
 
   it("stream fails after partial content: persists partial as aborted", async () => {
@@ -372,12 +370,12 @@ describe("chat upstream failures", () => {
         text += dec.decode(value, { stream: true });
       }
     })();
-    await waitFor(() => text.includes("threadId"));
+    await waitFor(() => text.includes("data-thread"));
     stream.pushText("partial answer");
     await waitFor(() => text.includes("partial answer"));
     stream.fail(new Error("upstream died"));
     await pump;
-    expect(text).toContain('"error":"upstream_stream"');
+    expect(text).toContain('"code":"upstream_stream"');
     const threadId = /"threadId":"([^"]+)"/.exec(text)![1];
     const asst = assistantMessages(threadId);
     expect(asst.length).toBe(1);
@@ -401,24 +399,54 @@ describe("chat upstream failures", () => {
         text += dec.decode(value, { stream: true });
       }
     })();
-    await waitFor(() => text.includes("threadId"));
+    await waitFor(() => text.includes("data-thread"));
     stream.fail(new Error("instant death"));
     await pump;
-    expect(text).toContain('"error":"upstream_stream"');
+    expect(text).toContain('"code":"upstream_stream"');
     const threadId = /"threadId":"([^"]+)"/.exec(text)![1];
     const um = userMessages(threadId);
     expect(um.length).toBe(1);
     expect(um[0].metaJson).toContain('"error":"upstream_stream"');
   });
 
+  it("stream ending without finish_reason: fatal upstream_stream, partial persisted", async () => {
+    // M2 divergence (accepted): the SDK parser treats a [DONE] with no
+    // finish_reason as invalid stream data (v1 tolerated it as a clean end).
+    const mock = mockLemonade();
+    mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
+    const stream = streamResponse();
+    bindStream(mock, stream);
+    const res = await postChat(chatBody());
+    const reader = res.body!.getReader();
+    const dec = new TextDecoder();
+    let text = "";
+    const pump = (async () => {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        text += dec.decode(value, { stream: true });
+      }
+    })();
+    await waitFor(() => text.includes("data-thread"));
+    stream.pushPayload({ choices: [{ index: 0, delta: { content: "dangling" } }] });
+    stream.done(); // [DONE] but no finish_reason frame
+    await pump;
+    expect(text).toContain('"code":"upstream_stream"');
+    const threadId = /"threadId":"([^"]+)"/.exec(text)![1];
+    const asst = assistantMessages(threadId);
+    expect(asst.length).toBe(1);
+    expect(asst[0].content).toBe("dangling");
+    expect(asst[0].metaJson).toContain("aborted");
+  });
+
   it("empty completion keeps the user message with an error annotation", async () => {
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
-    mock.route(CHAT, () => sseCompletion(""));
+    mock.route(CHAT, () => sseChatCompletion(""));
     const res = await postChat(chatBody());
-    const events = await drain(res);
-    expect(events.some((e) => e.error === "empty_response")).toBe(true);
-    const um = userMessages((events[0] as { threadId: string }).threadId);
+    const chunks = await drainUi(res);
+    expect(uiErrorCode(chunks)).toBe("empty_response");
+    const um = userMessages(uiThread(chunks));
     expect(um.length).toBe(1);
     expect(um[0].metaJson).toContain('"error":"empty_response"');
   });
@@ -430,9 +458,9 @@ describe("chat upstream failures", () => {
     const stream = streamResponse();
     bindStream(mock, stream);
     const res = await postChat(chatBody());
-    const events = await drain(res); // no data ever → timer fires at 1s, abort errors the body
-    expect(events.some((e) => e.error === "timeout")).toBe(true);
-    const threadId = (events[0] as { threadId: string }).threadId;
+    const chunks = await drainUi(res); // no data ever → timer fires at 1s, abort ends the stream
+    expect(uiErrorCode(chunks)).toBe("timeout");
+    const threadId = uiThread(chunks);
     const um = userMessages(threadId);
     expect(um.length).toBe(1);
     expect(um[0].metaJson).toContain('"error":"timeout"');
@@ -447,14 +475,14 @@ describe("chat upstream failures", () => {
       throw new Error("aborted mid-connect");
     });
     const res = await postChat(chatBody());
-    const events = await drain(res);
-    expect(events.some((e) => e.error === "timeout")).toBe(true);
-    const um = userMessages((events[0] as { threadId: string }).threadId);
+    const chunks = await drainUi(res);
+    expect(uiErrorCode(chunks)).toBe("timeout");
+    const um = userMessages(uiThread(chunks));
     expect(um.length).toBe(1);
     expect(um[0].metaJson).toContain('"error":"timeout"');
   });
 
-  it("SSE heartbeat comments keep a silent stream alive", async () => {
+  it("keep-alive comments keep a silent stream alive", async () => {
     setSetting("chat.sseHeartbeatMs", "50");
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
@@ -465,12 +493,13 @@ describe("chat upstream failures", () => {
     const dec = new TextDecoder();
     let text = "";
     const deadline = Date.now() + 5000;
-    while (!text.includes(": ping") && Date.now() < deadline) {
+    while (!text.includes(": keep-alive") && Date.now() < deadline) {
       const { done, value } = await reader.read();
       if (done) break;
       text += dec.decode(value, { stream: true });
     }
-    expect(text).toContain(": ping");
+    expect(text).toContain(": keep-alive");
+    expect(text).toContain(": stream-open");
     reader.releaseLock();
     await res.body!.cancel(); // cancel must clear the interval (cleanup path)
     await delay(150);
@@ -484,36 +513,39 @@ describe("chat upstream failures", () => {
     bindStream(mock, stream);
     stream.pushText("first bit");
     const res = await postChat(chatBody());
-    const events = await readEvents(res, 2); // threadId + one delta
-    expect(events[1].c).toBeTruthy();
-    stream.pushText(" more"); // sent while cancelling → enqueue may throw (caught)
+    const chunks = await readUi(res, 3); // data-thread, text-start, one delta
+    expect(chunks[2].type).toBe("text-delta");
+    stream.pushText(" more"); // sent while cancelling → write may throw (caught)
     await res.body!.cancel();
-    const threadId = (events[0] as { threadId: string }).threadId;
+    const threadId = uiThread(chunks);
     await waitFor(() => assistantMessages(threadId).length === 1);
     expect(assistantMessages(threadId)[0].metaJson).toContain("aborted");
   });
 
-  it("ignores malformed json, empty and reasoning-only deltas; forwards usage", async () => {
+  it("tolerates comments, no-op and reasoning deltas; forwards usage", async () => {
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
+    const env = { id: "1", object: "chat.completion.chunk", created: 0, model: "m" };
+    const line = (p: Record<string, unknown>) => `data: ${JSON.stringify({ ...env, ...p })}\n\n`;
     mock.route(CHAT, () =>
       new Response(
-        [
-          "data: \n",
-          "data: not-json\n",
-          'data: {"choices":[{"delta":{"content":"A"}}]}\n',
-          'data: {"choices":[{"delta":{"reasoning":"nope","content":""}}]}\n',
-          'data: {"choices":[{"delta":{}}],"usage":{"prompt_tokens":3}}\n',
-          "data: [DONE]\n",
-        ].join("\n"),
+        ": upstream-hello\n\n" +
+          line({ choices: [{ index: 0, delta: { role: "assistant", content: "" } }] }) +
+          line({ choices: [{ index: 0, delta: { content: "A" } }] }) +
+          line({ choices: [{ index: 0, delta: { reasoning: "nope" } }] }) +
+          line({ choices: [{ index: 0, delta: {} }] }) +
+          line({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }) +
+          line({ choices: [], usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 } }) +
+          "data: [DONE]\n\n",
         { headers: { "content-type": "text/event-stream" } }
       )
     );
     const res = await postChat(chatBody());
-    const events = await drain(res);
-    expect(events.filter((e) => "c" in e)).toEqual([{ c: "A" }]);
-    expect(events.at(-1)).toEqual({ done: true });
-    const threadId = (events[0] as { threadId: string }).threadId;
+    const chunks = await drainUi(res);
+    expect(uiText(chunks)).toBe("A");
+    expect(uiErrorCode(chunks)).toBeUndefined();
+    expect(chunks.some((c) => c.type.startsWith("reasoning"))).toBe(false);
+    const threadId = uiThread(chunks);
     expect(assistantMessages(threadId)[0].metaJson).toContain("prompt_tokens");
   });
 
@@ -523,9 +555,9 @@ describe("chat upstream failures", () => {
     setSetting("memory.enabled", "true");
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
-    mock.route(CHAT, () => sseCompletion("yo"));
+    mock.route(CHAT, () => sseChatCompletion("yo"));
     const res = await postChat(chatBody());
-    await drain(res);
+    await drainUi(res);
     await delay(30);
     expect(db.select().from(jobs).all().map((j) => j.type).sort()).toEqual([]);
   });
@@ -535,23 +567,21 @@ describe("chat upstream failures", () => {
     setSetting("memory.events.thread_summary", JSON.stringify({ schedule: "after_persist", enabled: true, idleMinutes: 5 }));
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
-    mock.route(CHAT, () => sseCompletion("yo"));
+    mock.route(CHAT, () => sseChatCompletion("yo"));
     const res = await postChat(chatBody());
-    await drain(res);
+    await drainUi(res);
     await waitFor(() => db.select().from(jobs).where(eq(jobs.type, "memory.thread_summary")).all().length === 1);
   });
 
   it("enqueue failure is swallowed (best-effort)", async () => {
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
-    mock.route(CHAT, () => sseCompletion("yo"));
-    // pre-insert a conflicting jobs row id to force the title enqueue insert to throw? Instead: block insert via unique dedupe row → upsert succeeds.
-    // Best-effort path is the .catch; simulate by deleting the threads FK target mid-run is too racy → assert happy dedupe instead.
+    mock.route(CHAT, () => sseChatCompletion("yo"));
     const res = await postChat(chatBody());
-    await drain(res);
+    await drainUi(res);
     await waitFor(() => db.select().from(jobs).where(eq(jobs.type, "chat.title_generation")).all().length === 1);
     const res2 = await postChat(chatBody({ threadId: db.select().from(threads).all()[0].id }));
-    await drain(res2);
+    await drainUi(res2);
     await delay(20);
     expect(db.select().from(jobs).where(eq(jobs.type, "chat.title_generation")).all().length).toBe(1); // dedupe absorbed
   });
@@ -571,7 +601,7 @@ describe("retry of a failed turn replaces the trailing user row", () => {
   function mockOk() {
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }, { id: "vision-model.test", vision: true }]));
-    mock.route(CHAT, () => sseCompletion("ok"));
+    mock.route(CHAT, () => sseChatCompletion("ok"));
     return mock;
   }
 
@@ -579,7 +609,7 @@ describe("retry of a failed turn replaces the trailing user row", () => {
     mockOk();
     seedThread("th-r1");
     seedUser("m-r1", "th-r1", "hello there", null);
-    await drain(await postChat(chatBody({ threadId: "th-r1" })));
+    await drainUi(await postChat(chatBody({ threadId: "th-r1" })));
     const rows = userMessages("th-r1");
     expect(rows.length).toBe(1);
     expect(rows[0].id).not.toBe("m-r1");
@@ -589,7 +619,7 @@ describe("retry of a failed turn replaces the trailing user row", () => {
     mockOk();
     seedThread("th-r2");
     seedUser("m-r2", "th-r2", "different", null);
-    await drain(await postChat(chatBody({ threadId: "th-r2" })));
+    await drainUi(await postChat(chatBody({ threadId: "th-r2" })));
     expect(userMessages("th-r2").length).toBe(2);
   });
 
@@ -597,7 +627,7 @@ describe("retry of a failed turn replaces the trailing user row", () => {
     mockOk();
     seedThread("th-r3");
     seedUser("m-r3", "th-r3", "hello there", JSON.stringify({ images: [pngA] }));
-    await drain(await postChat(chatBody({ threadId: "th-r3" })));
+    await drainUi(await postChat(chatBody({ threadId: "th-r3" })));
     expect(userMessages("th-r3").length).toBe(2);
   });
 
@@ -605,7 +635,7 @@ describe("retry of a failed turn replaces the trailing user row", () => {
     mockOk();
     seedThread("th-r4");
     seedUser("m-r4", "th-r4", "hello there", JSON.stringify({ images: [pngA] }));
-    await drain(await postChat(chatBody({ threadId: "th-r4", attachments: [pngB] })));
+    await drainUi(await postChat(chatBody({ threadId: "th-r4", attachments: [pngB] })));
     expect(userMessages("th-r4").length).toBe(2);
   });
 
@@ -613,7 +643,7 @@ describe("retry of a failed turn replaces the trailing user row", () => {
     mockOk();
     seedThread("th-r5");
     seedUser("m-r5", "th-r5", "hello there", JSON.stringify({ images: [pngA] }));
-    await drain(await postChat(chatBody({ threadId: "th-r5", attachments: [pngA] })));
+    await drainUi(await postChat(chatBody({ threadId: "th-r5", attachments: [pngA] })));
     const rows = userMessages("th-r5");
     expect(rows.length).toBe(1);
     expect(rows[0].id).not.toBe("m-r5");
@@ -623,7 +653,7 @@ describe("retry of a failed turn replaces the trailing user row", () => {
     mockOk();
     seedThread("th-r6");
     seedUser("m-r6", "th-r6", "hello there", JSON.stringify({ audio: "data:audio/wav;base64,AAA" }));
-    await drain(await postChat(chatBody({ threadId: "th-r6" })));
+    await drainUi(await postChat(chatBody({ threadId: "th-r6" })));
     expect(userMessages("th-r6").length).toBe(2);
   });
 });
@@ -647,7 +677,7 @@ describe("chat persist edge arms", () => {
 
   function baseMock(mock: LemonadeMock) {
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
-    mock.route(CHAT, () => sseCompletion("yo"));
+    mock.route(CHAT, () => sseChatCompletion("yo"));
   }
 
   it("title enqueue failure is swallowed (still streams + assistant persisted)", async () => {
@@ -655,10 +685,10 @@ describe("chat persist edge arms", () => {
     baseMock(mock);
     const restore = armJobsInsertThrow(1); // title_generation insert throws → .catch
     const res = await postChat(chatBody());
-    const events = await drain(res);
+    const chunks = await drainUi(res);
     restore();
-    expect(events.at(-1)).toEqual({ done: true });
-    const threadId = (events[0] as { threadId: string }).threadId;
+    expect(uiText(chunks)).toBe("yo");
+    const threadId = uiThread(chunks);
     expect(assistantMessages(threadId).length).toBe(1);
   });
 
@@ -668,9 +698,9 @@ describe("chat persist edge arms", () => {
     baseMock(mock);
     const restore = armJobsInsertThrow(2); // title then fact_extraction inserts throw
     const res = await postChat(chatBody());
-    const events = await drain(res);
+    const chunks = await drainUi(res);
     restore();
-    expect(events.at(-1)).toEqual({ done: true });
+    expect(uiText(chunks)).toBe("yo");
     expect(db.select().from(jobs).all().length).toBe(0);
   });
 
@@ -681,14 +711,14 @@ describe("chat persist edge arms", () => {
     for (let i = 0; i < 3; i++) db.insert(messages).values({ id: `p-${i}`, threadId: "th-nosum", role: "user", content: `past ${i}`, createdAt: new Date(t + i) }).run();
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
-    mock.route(CHAT, () => sseCompletion("ok"));
+    mock.route(CHAT, () => sseChatCompletion("ok"));
     const res = await postChat(chatBody({ threadId: "th-nosum" }));
-    await drain(res);
-    const sent = JSON.parse(mock.lastCall(CHAT)!.body!) as { messages: { content: string }[] };
+    await drainUi(res);
+    const sent = JSON.parse(mock.lastCall(CHAT)!.body!) as { messages: { content: unknown }[] };
     expect(JSON.stringify(sent.messages)).not.toContain("thread_summary");
   });
 
-  it("abort before any content: no persist, done+aborted event", async () => {
+  it("abort before any content: nothing persisted, no error frame", async () => {
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
     const stream = streamResponse();
@@ -707,11 +737,11 @@ describe("chat persist edge arms", () => {
         text += dec.decode(value, { stream: true });
       }
     })();
-    await waitFor(() => text.includes("threadId"));
+    await waitFor(() => text.includes("data-thread"));
     ac.abort();
     stream.fail(new Error("gone"));
     await pump;
-    expect(text).toContain('"done":true,"aborted":true');
+    expect(text).not.toContain("data-error");
     const threadId = /"threadId":"([^"]+)"/.exec(text)![1];
     expect(assistantMessages(threadId).length).toBe(0);
   });
@@ -722,9 +752,9 @@ describe("chat persist edge arms", () => {
     const stream = streamResponse();
     bindStream(mock, stream);
     const res = await postChat(chatBody());
-    const events = await readEvents(res, 1); // threadId only
+    const chunks = await readUi(res, 1); // data-thread only
     await res.body!.cancel();
-    const threadId = (events[0] as { threadId: string }).threadId;
+    const threadId = uiThread(chunks);
     await waitFor(() => !hasInFlightGeneration(user.userId));
     expect(assistantMessages(threadId).length).toBe(0);
     stream.done();
@@ -757,7 +787,7 @@ describe("chat persist edge arms", () => {
     const png = `data:image/png;base64,${Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString("base64")}`;
     const res = await postChat({ message: 42, attachments: [png] });
     expect(res.status).toBe(200);
-    await drain(res);
+    await drainUi(res);
     expect(db.select().from(threads).all()[0].title).toBe("Image");
   });
 });
@@ -813,37 +843,51 @@ describe("attachment turns follow the plain model fallback chain", () => {
   it("no vision override: fast default, body.model wins, thread.model persists", async () => {
     const mock = mockLemonade();
     mock.route("/v1/models", () => models());
-    mock.route(CHAT, () => sseCompletion("hi"));
+    mock.route(CHAT, () => sseChatCompletion("hi"));
 
     let res = await postChat({ message: "text turn" });
-    await drain(res);
+    await drainUi(res);
     const th = db.select().from(threads).all()[0];
     expect(th.model).toBe("default:fast-model.test");
 
     res = await postChat({ message: "what is this", threadId: th.id, attachments: [png] });
-    await drain(res);
+    await drainUi(res);
     expect((JSON.parse(mock.lastCall(CHAT)!.body!) as { model: string }).model).toBe("fast-model.test");
 
     res = await postChat({ message: "use other", threadId: th.id, attachments: [png], model: "default:other-model.test" });
-    await drain(res);
+    await drainUi(res);
     expect((JSON.parse(mock.lastCall(CHAT)!.body!) as { model: string }).model).toBe("other-model.test");
     // explicit body-model persists onto the thread (existing behavior)…
     expect(db.select().from(threads).all()[0].model).toBe("default:other-model.test");
 
     // …so later turns (attachments or not) follow the thread's model
     res = await postChat({ message: "back to text", threadId: th.id });
-    await drain(res);
+    await drainUi(res);
     expect((JSON.parse(mock.lastCall(CHAT)!.body!) as { model: string }).model).toBe("other-model.test");
   });
 
   it("new image-only thread persists the fast default", async () => {
     const mock = mockLemonade();
     mock.route("/v1/models", () => models());
-    mock.route(CHAT, () => sseCompletion("pic"));
+    mock.route(CHAT, () => sseChatCompletion("pic"));
     const res = await postChat({ message: "", attachments: [png] });
-    await drain(res);
+    await drainUi(res);
     const th = db.select().from(threads).all()[0];
     expect(th.model).toBe("default:fast-model.test");
     expect((JSON.parse(mock.lastCall(CHAT)!.body!) as { model: string }).model).toBe("fast-model.test");
+  });
+});
+
+describe("ui protocol invariants", () => {
+  it("text parts carry per-step unique ids and data-thread is the first frame", async () => {
+    const mock = mockLemonade();
+    mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
+    mock.route(CHAT, () => sseChatCompletion("abc"));
+    const chunks = await drainUi(await postChat(chatBody()));
+    expect(chunks[0]!.type).toBe("data-thread");
+    const text = chunks.filter((c) => c.type === "text-delta");
+    expect(text.length).toBeGreaterThan(0);
+    expect(text.every((c) => typeof c.id === "string" && c.id.startsWith("t"))).toBe(true);
+    expect(uiData(chunks, "data-thread")[0]).toEqual({ threadId: expect.any(String) });
   });
 });

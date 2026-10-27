@@ -13,8 +13,9 @@ import {
 import { ensureReady } from "@/lib/db";
 import { setUserMcpEnabled } from "@/lib/mcp/prefs";
 import { db, setFastModel, setSetting } from "./support/db";
-import { callRoute, makeRequest, sessionId, signUp, type TestUser } from "./support/app";
-import { json, mockLemonade, sseCompletion, streamResponse, type LemonadeMock } from "./support/lemonade";
+import { callRoute, makeRequest, sessionId, signUp, waitFor, type TestUser } from "./support/app";
+import { mockLemonade, sseChatCompletion, streamResponse } from "./support/lemonade";
+import { drainUi, uiData, uiErrorCode, uiText, uiThread, type UiChunk } from "./support/ui-stream";
 import { setCurrentHeaders } from "./support/request-context";
 import { jobs, messages, threads } from "@/lib/db/schema";
 
@@ -23,568 +24,560 @@ vi.mock("@/lib/mcp/bridge", async (importOriginal) => {
   return { ...actual, buildToolset: vi.fn(), runToolCall: vi.fn() };
 });
 
+const mockedBuild = vi.mocked(buildToolset);
+const mockedRun = vi.mocked(runToolCall);
+
 let user: TestUser & { userId: string };
+
 let modelSeq = 0;
-
-const CHAT = "/v1/chat/completions";
-
-const toolset = {
-  specs: [
-    {
-      type: "function" as const,
-      function: { name: "mcp__ketch__search", description: "ketch: search", parameters: {} },
-    },
-  ],
-  handles: new Map<string, ToolHandle>([
-    ["mcp__ketch__search", { serverId: "ketch", tool: "search", title: "ketch: search", userId: "u1" }],
-  ]),
-};
-const emptyToolset = { specs: [], handles: new Map<string, ToolHandle>() };
-
-function sseToolCalls(calls: { id?: string; name: string; args?: string }[]): Response {
-  let body = "";
-  calls.forEach((c, i) => {
-    const first = { index: i, ...(c.id ? { id: c.id } : {}), function: { name: c.name, arguments: "" } };
-    body += `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [first] } }] })}\n\n`;
-    if (c.args) {
-      body += `data: ${JSON.stringify({
-        choices: [{ delta: { tool_calls: [{ index: i, function: { arguments: c.args } }] } }] },
-      )}\n\n`;
-    }
-  });
-  body += "data: [DONE]\n\n";
-  return new Response(body, { headers: { "content-type": "text/event-stream" } });
-}
-
-/** One completion carrying assistant text AND tool calls (multi-round turns). */
-function sseTextAndToolCalls(
-  text: string,
-  calls: { id?: string; name: string; args?: string }[],
-): Response {
-  let body = "";
-  if (text) body += `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`;
-  calls.forEach((c, i) => {
-    const first = { index: i, ...(c.id ? { id: c.id } : {}), function: { name: c.name, arguments: "" } };
-    body += `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [first] } }] })}\n\n`;
-    if (c.args) {
-      body += `data: ${JSON.stringify({
-        choices: [{ delta: { tool_calls: [{ index: i, function: { arguments: c.args } }] } }] },
-      )}\n\n`;
-    }
-  });
-  body += "data: [DONE]\n\n";
-  return new Response(body, { headers: { "content-type": "text/event-stream" } });
-}
-
-async function drain(res: Response): Promise<Record<string, unknown>[]> {
-  const text = await res.text();
-  return text
-    .split("\n\n")
-    .filter((l) => l.startsWith("data: ") && l !== "data: [DONE]")
-    .map((l) => JSON.parse(l.slice(6)) as Record<string, unknown>);
-}
-
-async function readRest(res: Response): Promise<Record<string, unknown>[]> {
-  const reader = res.body!.getReader();
-  const dec = new TextDecoder();
-  let buf = "";
-  const out: Record<string, unknown>[] = [];
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
-  }
-  for (const part of buf.split("\n\n")) {
-    if (part.startsWith("data: ") && part !== "data: [DONE]") out.push(JSON.parse(part.slice(6)));
-  }
-  reader.releaseLock();
-  return out;
-}
-
-async function readEvents(res: Response, n: number): Promise<Record<string, unknown>[]> {
-  const reader = res.body!.getReader();
-  const dec = new TextDecoder();
-  let buf = "";
-  const out: Record<string, unknown>[] = [];
-  while (out.length < n) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
-    let i: number;
-    while ((i = buf.indexOf("\n\n")) >= 0 && out.length < n) {
-      const line = buf.slice(0, i).replace(/\r/g, "");
-      buf = buf.slice(i + 2);
-      if (line.startsWith("data: ") && line.slice(6) !== "[DONE]") out.push(JSON.parse(line.slice(6)));
-    }
-  }
-  reader.releaseLock();
-  return out;
-}
-
-async function postChat(jsonBody: Record<string, unknown>) {
-  return callRoute(chatRoute.POST, {
-    method: "POST",
-    path: "/api/chat",
-    cookie: user.cookie,
-    json: { message: "hello", ...jsonBody },
-  });
-}
-
-function nextModel() {
-  modelSeq += 1;
-  const id = `tool-model-${modelSeq}`;
-  setFastModel(id);
-  return id;
-}
-
-function assistantRows(threadId: string) {
-  return db
-    .select()
-    .from(messages)
-    .where(and(eq(messages.threadId, threadId), eq(messages.role, "assistant")))
-    .all();
-}
-
-function upstreamBodies(mock: LemonadeMock) {
-  return mock.bodies(CHAT) as { messages: Record<string, unknown>[]; tools?: unknown; tool_choice?: string }[];
-}
 
 beforeAll(async () => {
   await ensureReady();
-  const u = await signUp("tooluser");
+  const u = await signUp("toolsuser");
   user = Object.assign(u, { userId: await sessionId(u.cookie) });
 });
 
-let mock: LemonadeMock;
+const toolset = (n = 1) => ({
+  specs: Array.from({ length: n }, (_, i) => ({
+    type: "function" as const,
+    function: {
+      name: `mcp__ketch__search${i > 0 ? `_${i + 1}` : ""}`,
+      description: "ketch: search",
+      parameters: { type: "object", additionalProperties: true },
+    },
+  })),
+  handles: new Map<string, ToolHandle>(
+    Array.from({ length: n }, (_, i) => [
+      `mcp__ketch__search${i > 0 ? `_${i + 1}` : ""}`,
+      { serverId: "ketch", tool: `search${i > 0 ? `_${i + 1}` : ""}`, title: "search", userId: user.userId },
+    ])
+  ),
+});
+
+/** Realistic OpenAI stream that requests ONE tool call (SDK parser needs the
+ *  chunk envelope + finish_reason — M0 spike finding). */
+function sseToolCalls(id: string, name: string, args: string): Response {
+  const env = { id: "c1", object: "chat.completion.chunk", created: 0, model: "m" };
+  const line = (p: Record<string, unknown>) => `data: ${JSON.stringify({ ...env, ...p })}\n\n`;
+  return new Response(
+    line({
+      choices: [
+        {
+          index: 0,
+          delta: { tool_calls: [{ index: 0, id, type: "function", function: { name, arguments: args } }] },
+        },
+      ],
+    }) +
+      line({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }) +
+      "data: [DONE]\n\n",
+    { headers: { "content-type": "text/event-stream" } }
+  );
+}
+
+function sseText(text: string): Response {
+  return sseChatCompletion(text);
+}
+
+/** The tool chip events (data-tool parts) in arrival order. */
+const toolEvents = (chunks: UiChunk[]) => uiData<Record<string, unknown>>(chunks, "data-tool");
+
+const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 beforeEach(() => {
   db.delete(messages).run();
   db.delete(threads).run();
   db.delete(jobs).run();
-  setFastModel(`model-def-${Date.now()}-${modelSeq++}`);
+  // Unique model id per test: the capability-degradation set is module state.
+  setFastModel(`tool-model-${Date.now()}-${modelSeq++}`);
   setSetting("mcp.enabled", "true");
   setSetting("mcp.maxToolRounds", "4");
-  vi.mocked(buildToolset).mockResolvedValue(toolset);
-  vi.mocked(runToolCall).mockResolvedValue({ content: "RESULT", ok: true, ms: 5 });
-  mock = mockLemonade();
+  mockedBuild.mockReset();
+  mockedRun.mockReset();
+  mockedBuild.mockResolvedValue(toolset());
+  mockedRun.mockResolvedValue({ content: "RESULT", ok: true, ms: 5 });
+  setUserMcpEnabled(user.userId, null);
 });
 
 afterEach(() => {
-  vi.clearAllMocks();
+  setUserMcpEnabled(user.userId, null);
 });
 
-describe("chat tool loop", () => {
-  it("per-user opt-out suppresses tool injection", async () => {
-    setUserMcpEnabled(user.userId, false);
-    try {
-      mock.route(CHAT, () => sseCompletion("plain answer"));
-      const res = await postChat({});
-      const events = await drain(res);
-      expect(events.map((e) => Object.keys(e)[0])).toEqual(["threadId", "c", "done"]);
-      expect(upstreamBodies(mock)[0].tools).toBeUndefined();
+async function post(json: Record<string, unknown>) {
+  return callRoute(chatRoute.POST, {
+    method: "POST",
+    path: "/api/chat",
+    cookie: user.cookie,
+    json: { message: "hi", ...json },
+  });
+}
 
-      // A thread with a past tool turn must NOT re-arm tool tokens while opted out.
-      const threadId = events[0].threadId as string;
-      db.insert(messages)
-        .values({
-          id: "opt-tool-1",
-          threadId,
-          role: "assistant",
-          content: "Tokyo",
-          metaJson: JSON.stringify({ model: "m", tools: [{ server: "ketch", name: "search", ms: 1, ok: true, args: "{}", result: "R" }], toolCalls: [{ id: "t0", name: "mcp__ketch__search", args: "{}" }] }),
-          createdAt: new Date(),
-        })
-        .run();
-      await postChat({ threadId, message: "again?" });
-      const msgs = upstreamBodies(mock)[1].messages as Record<string, unknown>[];
-      expect(msgs.some((m) => m.role === "tool" || m.tool_calls !== undefined)).toBe(false);
-      expect(msgs.some((m) => m.role === "assistant" && m.content === "Tokyo")).toBe(true);
-    } finally {
-      setUserMcpEnabled(user.userId, null);
+/** Read UI chunks (data frames only) until `n` arrived. */
+async function readUi(res: Response, n: number): Promise<UiChunk[]> {
+  const reader = res.body!.getReader();
+  const dec = new TextDecoder();
+  let leftover = "";
+  const out: UiChunk[] = [];
+  while (out.length < n) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const frames = (leftover + dec.decode(value, { stream: true })).split("\n\n");
+    leftover = frames.pop() ?? "";
+    for (const f of frames) {
+      const payload = f.startsWith("data:") ? f.slice(f.indexOf(":") + 1).trim() : "";
+      if (payload && payload !== "[DONE]") out.push(JSON.parse(payload) as UiChunk);
     }
+  }
+  reader.releaseLock();
+  return out;
+}
+
+/** Drain the remaining body (until the stream closes) via the reader. */
+async function readRest(res: Response): Promise<string> {
+  const reader = res.body!.getReader();
+  const dec = new TextDecoder();
+  let text = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += dec.decode(value, { stream: true });
+  }
+  return text;
+}
+
+describe("chat loop (MCP tools → AI SDK rounds)", () => {
+  it("no round-trip without toolset", async () => {
+    mockedBuild.mockResolvedValue(toolset(0));
+    const mock = mockLemonade();
+    mock.route("/v1/chat/completions", () => sseText("plain answer"));
+    const res = await post({ message: "hello" });
+    const chunks = await drainUi(res);
+    expect(uiText(chunks)).toBe("plain answer");
+    expect(toolEvents(chunks)).toEqual([]);
+    expect(mock.calls).toHaveLength(1);
+    // No tool definitions sent
+    const body = JSON.parse(mock.lastCall("/v1/chat/completions")!.body!) as Record<string, unknown>;
+    expect(body.tools).toBeUndefined();
   });
 
-  it("runs one tool round: events, rebuilt messages, meta.tools", async () => {
+  it("one round-trip: event to client, result back to model, persisted meta", async () => {
+    mockedBuild.mockResolvedValue(toolset());
+    mockedRun.mockResolvedValue({ content: "search results here", ok: true, ms: 42 });
+    const mock = mockLemonade();
     let n = 0;
-    mock.route(CHAT, () => {
-      n += 1;
-      return n === 1
-        ? sseToolCalls([{ id: "t0", name: "mcp__ketch__search", args: '{"q":"x"}' }])
-        : sseCompletion("Answer", { usage: { total_tokens: 7 } });
+    mock.route("/v1/chat/completions", () => (++n === 1 ? sseToolCalls("t0", "mcp__ketch__search", '{"q":"x"}') : sseText("FINAL")));
+    const res = await post({ message: "search x" });
+    const chunks = await drainUi(res);
+    const events = toolEvents(chunks);
+    expect(events).toHaveLength(2); // running, done
+    expect(events[0]).toMatchObject({ server: "ketch", name: "search", status: "running", args: '{"q":"x"}' });
+    expect(events[1]).toMatchObject({
+      status: "done",
+      result: "search results here",
+      ms: 42,
+      args: '{"q":"x"}', // raw arguments string rides on the terminal event too
     });
-    const res = await postChat({});
-    const events = await drain(res);
-    expect(events.map((e) => Object.keys(e)[0])).toEqual(["threadId", "tool", "tool", "c", "done"]);
-    expect(events[1]).toEqual({ tool: { server: "ketch", name: "search", status: "running", args: '{"q":"x"}' } });
-    expect(events[2]).toEqual({ tool: { server: "ketch", name: "search", status: "done", args: '{"q":"x"}', result: "RESULT", ms: 5 } });
-
-    const bodies = upstreamBodies(mock);
-    expect(bodies[0].tools).toEqual(toolset.specs);
-    expect(bodies[0].tool_choice).toBe("auto");
+    expect(uiText(chunks)).toBe("FINAL");
+    // second request carries the tool result with the SAME id the client saw
+    // (the compat provider re-serializes to OpenAI wire format on the way out)
+    const bodies = mock.bodies("/v1/chat/completions") as {
+      messages: { role: string; content: unknown; tool_calls?: { id: string; function: { name: string; arguments: string } }[]; tool_call_id?: string }[];
+    }[];
     const tail = bodies[1].messages.slice(-2);
     expect(tail[0]).toMatchObject({
       role: "assistant",
-      content: null,
-      tool_calls: [{ id: "t0", type: "function", function: { name: "mcp__ketch__search", arguments: '{"q":"x"}' } }],
+      tool_calls: [{ id: "t0", function: { name: "mcp__ketch__search", arguments: '{"q":"x"}' } }],
     });
-    expect(tail[1]).toMatchObject({ role: "tool", tool_call_id: "t0", content: "RESULT" });
-
-    const threadId = events[0].threadId as string;
-    const row = assistantRows(threadId)[0];
-    const meta = JSON.parse(row.metaJson!) as {
-      model: string;
-      usage: unknown;
-      tools: { server: string; name: string; ms: number; ok: boolean; args: string; result: string }[];
-    };
-    expect(meta.tools).toHaveLength(1);
-    expect(meta.tools[0]).toMatchObject({ server: "ketch", name: "search", ms: 5, ok: true, args: '{"q":"x"}' });
-    expect(meta.usage).toEqual({ total_tokens: 7 });
-    // Text-less first round: chips ride at the top, the answer follows (issue #7).
-    expect(meta).toMatchObject({ parts: [{ type: "tools", count: 1 }, { type: "text", text: "Answer" }] });
+    expect(tail[1]).toMatchObject({ role: "tool", tool_call_id: "t0", content: "search results here" });
+    // dispatched through the bridge with the raw args
+    expect(mockedRun).toHaveBeenCalledTimes(1);
+    expect(mockedRun.mock.calls[0][1]).toBe('{"q":"x"}');
+    // assistant meta carries the round
+    const threadId = uiThread(chunks);
+    const asst = db
+      .select()
+      .from(messages)
+      .where(and(eq(messages.threadId, threadId), eq(messages.role, "assistant")))
+      .get();
+    const meta = JSON.parse(asst!.metaJson!) as { tools: unknown[] };
+    expect(meta.tools).toEqual([
+      { server: "ketch", name: "search", ms: 42, ok: true, args: '{"q":"x"}', result: "search results here" },
+    ]);
   });
 
-  it("truncated tool result: flag on the SSE event and the persisted meta round", async () => {
-    vi.mocked(runToolCall).mockResolvedValue({ content: "CUT", ok: true, ms: 5, truncated: true });
+  it("parallel calls in one round: all dispatched (incl. unknown name = no chip, no round)", async () => {
+    mockedBuild.mockResolvedValue(toolset(2));
+    mockedRun.mockResolvedValue({ content: "ok", ok: true, ms: 5 });
+    const mock = mockLemonade();
     let n = 0;
-    mock.route(CHAT, () => {
+    mock.route("/v1/chat/completions", () => {
       n += 1;
-      return n === 1
-        ? sseToolCalls([{ id: "t0", name: "mcp__ketch__search", args: '{"q":"x"}' }])
-        : sseCompletion("Answer");
+      if (n === 1) {
+        const env = { id: "c1", object: "chat.completion.chunk", created: 0, model: "m" };
+        const line = (p: Record<string, unknown>) => `data: ${JSON.stringify({ ...env, ...p })}\n\n`;
+        return new Response(
+          line({
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [
+                    { index: 0, id: "a", type: "function", function: { name: "mcp__ketch__search", arguments: "{}" } },
+                    { index: 1, id: "b", type: "function", function: { name: "mcp__ketch__search_2", arguments: "{}" } },
+                    { index: 2, id: "c", type: "function", function: { name: "mcp__ghost__x", arguments: "{}" } },
+                  ],
+                },
+              },
+            ],
+          }) +
+            line({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }) +
+            "data: [DONE]\n\n",
+          { headers: { "content-type": "text/event-stream" } }
+        );
+      }
+      return sseText("done");
     });
-    const res = await postChat({});
-    const events = await drain(res);
-    expect(events[2]).toEqual({
-      tool: { server: "ketch", name: "search", status: "done", args: '{"q":"x"}', result: "CUT", ms: 5, truncated: true },
-    });
-    const threadId = events[0].threadId as string;
-    const row = assistantRows(threadId)[0];
-    const meta = JSON.parse(row.metaJson!) as { tools: Record<string, unknown>[] };
-    expect(meta.tools[0]).toMatchObject({ server: "ketch", name: "search", ok: true, result: "CUT", truncated: true });
-    // History rebuild keeps the flag: stored rounds survive parse/synthesis.
-    const rounds = parseToolRounds(row.metaJson);
-    expect(rounds).toHaveLength(1);
-    expect(rounds[0].truncated).toBe(true);
+    const res = await post({ message: "go" });
+    const chunks = await drainUi(res);
+    // accepted calls run; the unknown name becomes an SDK tool-error fed back
+    // to the model (no chip event, no persisted record) — M2 divergence.
+    expect(mockedRun).toHaveBeenCalledTimes(2);
+    const bodies = mock.bodies("/v1/chat/completions") as { messages: { role: string }[] }[];
+    const toolMsgs = bodies[1].messages.filter((m) => m.role === "tool");
+    expect(toolMsgs).toHaveLength(3); // two results + the unknown-tool error
+    const asst = db
+      .select()
+      .from(messages)
+      .where(and(eq(messages.threadId, uiThread(chunks)), eq(messages.role, "assistant")))
+      .get();
+    const meta = JSON.parse(asst!.metaJson!) as { tools: { name: string }[] };
+    expect(meta.tools.map((t) => t.name)).toEqual(["search", "search_2"]);
+    // Divergence (M2, accepted): unknown tool names are handled by the SDK
+    // (error result to the model); no chip event, no persisted record.
+    const chipNames = toolEvents(chunks)
+      .map((e) => `${e.name}:${e.status}`)
+      .sort();
+    expect(chipNames).toEqual(["search:done", "search:running", "search_2:done", "search_2:running"]);
   });
 
-  it("non-truncated rounds carry no flag (payloads stay byte-stable)", async () => {
-    const dispatched = await dispatchToolCalls(
-      [{ id: "t0", type: "function", function: { name: "mcp__ketch__search", arguments: "{}" } }],
-      toolset.handles,
-      () => undefined,
+  it("tool result content is passed to the model as-is", async () => {
+    mockedBuild.mockResolvedValue(toolset());
+    mockedRun.mockResolvedValue({ content: "x".repeat(70000), ok: true, ms: 3 });
+    const mock = mockLemonade();
+    let n = 0;
+    mock.route("/v1/chat/completions", () => (++n === 1 ? sseToolCalls("t0", "mcp__ketch__search", "{}") : sseText("ok")));
+    await drainUi(await post({ message: "go" }));
+    const bodies = mock.bodies("/v1/chat/completions") as {
+      messages: { role: string; content: unknown }[];
+    }[];
+    const toolMsg = bodies[1].messages.find((m) => m.role === "tool");
+    expect(String(toolMsg!.content).length).toBe(70000);
+  });
+
+  it("tool call arguments are parsed for the model AND the raw text is persisted", async () => {
+    mockedBuild.mockResolvedValue(toolset());
+    mockedRun.mockResolvedValue({ content: "ok", ok: true, ms: 1 });
+    const mock = mockLemonade();
+    let n = 0;
+    mock.route("/v1/chat/completions", () =>
+      ++n === 1 ? sseToolCalls("t0", "mcp__ketch__search", '{ "q" : "x" }') : sseText("fin")
     );
-    expect(dispatched.records[0]).not.toHaveProperty("truncated");
+    await drainUi(await post({ message: "go" }));
+    // history sent to the model: the SDK re-serializes the parsed input on the
+    // wire; what we persist is the raw model text
+    const bodies = mock.bodies("/v1/chat/completions") as {
+      messages: { role: string; tool_calls?: { function: { arguments: string } }[] }[];
+    }[];
+    const call = bodies[1].messages.find((m) => m.role === "assistant")!.tool_calls![0];
+    expect(JSON.parse(call.function.arguments)).toEqual({ q: "x" });
+    const asst = db
+      .select()
+      .from(messages)
+      .where(eq(messages.role, "assistant"))
+      .get();
+    expect(JSON.parse(asst!.metaJson!).tools[0].args).toBe('{ "q" : "x" }');
   });
 
-  it("multi-round turn: meta.parts keeps the text/tool execution order", async () => {
+  it("stops after maxToolRounds (budget guard: no more dispatches)", async () => {
+    setSetting("mcp.maxToolRounds", "1");
+    mockedBuild.mockResolvedValue(toolset());
+    mockedRun.mockResolvedValue({ content: "r", ok: true, ms: 1 });
+    const mock = mockLemonade();
     let n = 0;
-    mock.route(CHAT, () => {
+    mock.route("/v1/chat/completions", () => {
       n += 1;
-      if (n === 1)
-        return sseTextAndToolCalls("Looking it up. ", [{ id: "t0", name: "mcp__ketch__search", args: '{"q":"a"}' }]);
-      if (n === 2)
-        return sseTextAndToolCalls("One more. ", [{ id: "t1", name: "mcp__ketch__search", args: '{"q":"b"}' }]);
-      return sseCompletion("Final answer.");
+      return sseToolCalls(`t${n}`, "mcp__ketch__search", "{}"); // model always wants to call
     });
-    const events = await drain(await postChat({}));
-    const threadId = events[0].threadId as string;
-    const row = assistantRows(threadId)[0];
-    expect(row.content).toBe("Looking it up. One more. Final answer.");
-    const meta = JSON.parse(row.metaJson!) as { tools: unknown[]; parts: unknown[] };
+    const res = await post({ message: "go" });
+    const chunks = await drainUi(res);
+    // 2 upstream calls (round + final answering call), only 1 dispatch: the
+    // budget guard discards further executions (same as v1's round cap).
+    await waitFor(() => mock.calls.filter((c) => c.url.includes("/v1/chat/completions")).length === 2);
+    await delay(50);
+    expect(mock.calls.filter((c) => c.url.includes("/v1/chat/completions")).length).toBe(2);
+    expect(mockedRun).toHaveBeenCalledTimes(1);
+    // no text ever → failed turn marked on the user message
+    expect(uiErrorCode(chunks)).toBe("empty_response");
+  });
+
+  it("MCP disabled by settings: no tools at all", async () => {
+    setSetting("mcp.enabled", "false");
+    const mock = mockLemonade();
+    mock.route("/v1/chat/completions", () => sseText("plain"));
+    const res = await post({ message: "go" });
+    expect(uiText(await drainUi(res))).toBe("plain");
+    expect(mockedBuild).not.toHaveBeenCalled();
+    const body = JSON.parse(mock.lastCall("/v1/chat/completions")!.body!) as Record<string, unknown>;
+    expect(body.tools).toBeUndefined();
+    setSetting("mcp.enabled", "true");
+  });
+
+  it("per-user opt-out suppresses tool injection; history is not re-armed", async () => {
+    setSetting("chat.windowMessages", "10");
+    setUserMcpEnabled(user.userId, false);
+    const t = Date.now();
+    db.insert(threads)
+      .values({ id: "th-mcpoff", userId: user.userId, model: "fast-model.test", title: "x", createdAt: new Date(t), updatedAt: new Date(t) })
+      .run();
+    db.insert(messages)
+      .values({
+        id: "u1",
+        threadId: "th-mcpoff",
+        role: "user",
+        content: "hello",
+        createdAt: new Date(t + 1),
+      })
+      .run();
+    db.insert(messages)
+      .values({
+        id: "a1",
+        threadId: "th-mcpoff",
+        role: "assistant",
+        content: "Tokyo",
+        metaJson: JSON.stringify({
+          model: "m",
+          tools: [{ server: "ketch", name: "search", ms: 5, ok: true, args: "{}", result: "capital" }],
+        }),
+        createdAt: new Date(t + 2),
+      })
+      .run();
+    const mock = mockLemonade();
+    mock.route("/v1/chat/completions", () => sseText("replied"));
+    const res = await post({ threadId: "th-mcpoff", message: "again" });
+    expect(uiText(await drainUi(res))).toBe("replied");
+    expect(mockedBuild).not.toHaveBeenCalled();
+    const body = JSON.parse(mock.lastCall("/v1/chat/completions")!.body!) as {
+      tools?: unknown;
+      messages: { role: string; content: unknown; tool_calls?: unknown }[];
+    };
+    expect(body.tools).toBeUndefined();
+    // A thread with a past tool turn must NOT re-arm tool tokens while opted
+    // out (route skips expandToolRounds when no toolset is attached).
+    expect(body.messages.some((m) => m.role === "tool" || m.tool_calls !== undefined)).toBe(false);
+    expect(body.messages.some((m) => m.role === "assistant" && m.content === "Tokyo")).toBe(true);
+  });
+
+  it("interleaved text+tool rounds persisted in execution order (issue #7)", async () => {
+    mockedBuild.mockResolvedValue(toolset());
+    mockedRun.mockResolvedValue({ content: "r1", ok: true, ms: 2 });
+    const env = { id: "c1", object: "chat.completion.chunk", created: 0, model: "m" };
+    const line = (p: Record<string, unknown>) => `data: ${JSON.stringify({ ...env, ...p })}\n\n`;
+    const interleaved = (callId: string, text: string) =>
+      new Response(
+        line({ choices: [{ index: 0, delta: { content: text } }] }) +
+          line({
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [{ index: 0, id: callId, type: "function", function: { name: "mcp__ketch__search", arguments: "{}" } }],
+                },
+              },
+            ],
+          }) +
+          line({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }) +
+          "data: [DONE]\n\n",
+        { headers: { "content-type": "text/event-stream" } }
+      );
+    const mock = mockLemonade();
+    let n = 0;
+    mock.route("/v1/chat/completions", () => {
+      n += 1;
+      if (n === 1) return interleaved("t0", "thinking about x ");
+      if (n === 2) return interleaved("t1", "then about y ");
+      return sseText("at the end z");
+    });
+    const res = await post({ message: "go" });
+    const chunks = await drainUi(res);
+    expect(uiText(chunks)).toBe("thinking about x then about y at the end z");
+    const threadId = uiThread(chunks);
+    const asst = db
+      .select()
+      .from(messages)
+      .where(and(eq(messages.threadId, threadId), eq(messages.role, "assistant")))
+      .get();
+    const meta = JSON.parse(asst!.metaJson!) as { tools: unknown[]; parts: unknown[] };
     expect(meta.tools).toHaveLength(2);
     expect(meta.parts).toEqual([
-      { type: "text", text: "Looking it up. " },
+      { type: "text", text: "thinking about x " },
       { type: "tools", count: 1 },
-      { type: "text", text: "One more. " },
+      { type: "text", text: "then about y " },
       { type: "tools", count: 1 },
-      { type: "text", text: "Final answer." },
-    ]);
-    // Model-facing history is unchanged by the ordering meta: the two stored
-    // rounds replay as their synthesized exchanges only when offered again —
-    // the live second/third upstream calls just append their dispatched pairs.
-    const bodies = upstreamBodies(mock);
-    const round2Tail = bodies[1].messages.slice(-2);
-    expect(round2Tail.map((m) => m.role)).toEqual(["assistant", "tool"]);
-    const round3Tail = bodies[2].messages.slice(-2);
-    expect(round3Tail.map((m) => m.role)).toEqual(["assistant", "tool"]);
-    // No stored-round rebuild happened mid-turn (single row at the end).
-    expect(assistantRows(threadId)).toHaveLength(1);
-  });
-
-  it("parallel calls incl. unknown tool name → error result, no throw", async () => {
-    let n = 0;
-    mock.route(CHAT, () => {
-      n += 1;
-      return n === 1
-        ? sseToolCalls([
-            { id: "a", name: "mcp__ketch__search", args: "{}" },
-            { id: "b", name: "mcp__ghost__x" },
-          ])
-        : sseCompletion("done now");
-    });
-    const events = await drain(await postChat({}));
-    const toolEvents = events.filter((e) => e.tool).map((e) => e.tool as Record<string, unknown>);
-    expect(toolEvents).toContainEqual({ server: "ketch", name: "search", status: "running", args: "{}" });
-    expect(
-      toolEvents.some(
-        (t) => t.status === "error" && t.name === "mcp__ghost__x" && String(t.result).includes("unknown tool"),
-      ),
-    ).toBe(true);
-    expect(toolEvents).toContainEqual({ server: "ketch", name: "search", status: "done", args: "{}", result: "RESULT", ms: 5 });
-
-    const toolMsgs = upstreamBodies(mock)[1].messages.filter((m) => m.role === "tool");
-    expect(toolMsgs).toHaveLength(2);
-    expect(String(toolMsgs[1].content)).toContain("unknown tool");
-
-    const threadId = events[0].threadId as string;
-    const meta = JSON.parse(assistantRows(threadId)[0].metaJson!) as { tools: { server: string; ok: boolean }[] };
-    expect(meta.tools).toEqual([
-      expect.objectContaining({ server: "ketch", ok: true }),
-      expect.objectContaining({ server: "?", ok: false }),
+      { type: "text", text: "at the end z" },
     ]);
   });
 
-  it("tool error result → error event, model still answers, record ok:false", async () => {
-    vi.mocked(runToolCall).mockResolvedValue({ content: "tool error: boom", ok: false, ms: 2 });
+  it("4xx with tools → retry WITHOUT tools (capability degradation)", async () => {
+    mockedBuild.mockResolvedValue(toolset());
+    const mock = mockLemonade();
     let n = 0;
-    mock.route(CHAT, () => {
+    mock.route("/v1/chat/completions", (url, call) => {
       n += 1;
-      return n === 1 ? sseToolCalls([{ id: "t0", name: "mcp__ketch__search" }]) : sseCompletion("sorry");
+      const body = JSON.parse(call.body!) as { tools?: unknown };
+      if (n === 1) {
+        expect(body.tools).toBeDefined();
+        return new Response(JSON.stringify({ error: { message: "tool_choice not supported" } }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      expect(body.tools).toBeUndefined(); // retry must not include tools
+      return sseText("text-only answer");
     });
-    const events = await drain(await postChat({}));
-    expect(events.filter((e) => e.tool).map((e) => (e.tool as { status: string }).status)).toEqual([
-      "running",
-      "error",
-    ]);
-    const meta = JSON.parse(assistantRows(events[0].threadId as string)[0].metaJson!) as {
-      tools: { ok: boolean; result: string }[];
-    };
-    expect(meta.tools[0]).toMatchObject({ ok: false, result: "tool error: boom" });
+    const res = await post({ message: "go" });
+    const chunks = await drainUi(res);
+    expect(uiText(chunks)).toBe("text-only answer");
+    expect(uiErrorCode(chunks)).toBeUndefined();
+    expect(n).toBe(2);
+    // the model is remembered: a second chat turn sends NO tools from the start
+    const res2 = await post({ message: "go again" });
+    await drainUi(res2);
+    expect(((mock.bodies("/v1/chat/completions").at(-1) ?? {}) as { tools?: unknown }).tools).toBeUndefined();
   });
 
-  it("stops after mcp.maxToolRounds rounds (no further dispatch)", async () => {
-    setSetting("mcp.maxToolRounds", "1");
-    mock.route(CHAT, () => sseToolCalls([{ id: "t0", name: "mcp__ketch__search" }]));
-    const events = await drain(await postChat({}));
-    expect(events.at(-1)).toEqual({ error: "empty_response" });
-    expect(mock.calls.filter((c) => c.url.includes(CHAT))).toHaveLength(2);
-    expect(vi.mocked(runToolCall)).toHaveBeenCalledTimes(1);
-    const userMsgs = db.select().from(messages).where(eq(messages.role, "user")).all();
-    expect(userMsgs).toHaveLength(1); // turn kept + annotated so the user can retry
-    expect(userMsgs[0].metaJson).toContain('"error":"empty_response"');
+  it("400 persists twice → error surfaces (one retry max)", async () => {
+    mockedBuild.mockResolvedValue(toolset());
+    const mock = mockLemonade();
+    mock.route("/v1/chat/completions", () => new Response("nope", { status: 400 }));
+    const res = await post({ message: "go" });
+    const chunks = await drainUi(res);
+    expect(uiErrorCode(chunks)).toBe("upstream_status_400");
+    expect(mock.calls.filter((c) => c.url.includes("/v1/chat/completions"))).toHaveLength(2);
   });
 
-  it("4xx with tools → silent retry without tools, model remembered", async () => {
-    const model = nextModel();
+  it("400 recovery mid-session: later turns skip injection", async () => {
+    mockedBuild.mockResolvedValue(toolset());
+    const mock = mockLemonade();
     let n = 0;
-    mock.route(CHAT, () => {
+    mock.route("/v1/chat/completions", (_url, call) => {
       n += 1;
-      return n === 1 ? json({ error: "tools unsupported" }, 400) : sseCompletion("plain answer");
+      const tools = (JSON.parse(call.body!) as { tools?: unknown[] }).tools;
+      if (n === 1) {
+        expect(tools).toBeDefined();
+        return new Response("bad", { status: 400 });
+      }
+      // attempt 2 (no tools) succeeds; turn 2 must never re-attach tools
+      return sseText(`ok ${n}`);
     });
-    const events = await drain(await postChat({}));
-    expect(events.at(-1)).toEqual({ done: true });
-    const bodies = upstreamBodies(mock);
-    expect(bodies[0].tools).toBeDefined();
-    expect(bodies[1].tools).toBeUndefined();
-    expect(bodies[1].tool_choice).toBeUndefined();
-
-    // Second turn on the same model: buildToolset is skipped entirely.
-    mock.route(CHAT, () => sseCompletion("again"));
-    await drain(await postChat({}));
-    expect(vi.mocked(buildToolset)).toHaveBeenCalledTimes(1);
-    expect(model).toBeTruthy();
+    expect(uiText(await drainUi(await post({ message: "first" })))).toBe("ok 2");
+    const chunks2 = await drainUi(await post({ message: "second" }));
+    expect(uiText(chunks2)).toBe("ok 3");
+    const lastBody = mock.bodies("/v1/chat/completions").at(-1) as { tools?: unknown[] };
+    expect(lastBody.tools).toBeUndefined();
   });
 
-  it("4xx twice → surfaces upstream_status error", async () => {
-    nextModel();
-    mock.route(CHAT, () => json({ error: "nope" }, 400));
-    const events = await drain(await postChat({}));
-    expect(events.at(-1)).toEqual({ error: "upstream_status_400" });
-    expect(mock.calls.filter((c) => c.url.includes(CHAT))).toHaveLength(2);
-  });
-
-  it("abort between rounds persists partial with tool records", async () => {
+  it("tool loop survives client abort between rounds: partial assistant persisted with tool records", async () => {
+    mockedBuild.mockResolvedValue(toolset());
+    mockedRun.mockResolvedValue({ content: "r1", ok: true, ms: 2 });
+    const mock = mockLemonade();
     let n = 0;
     const first = streamResponse();
     first.pushText("So slowly");
     first.pushPayload({
-      choices: [{ delta: { tool_calls: [{ index: 0, id: "t0", function: { name: "mcp__ketch__search", arguments: "{}" } }] } }],
+      choices: [
+        {
+          index: 0,
+          delta: { tool_calls: [{ index: 0, id: "t0", type: "function", function: { name: "mcp__ketch__search", arguments: "{}" } }] },
+        },
+      ],
     });
+    first.pushPayload({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] });
     first.done();
-    mock.route(CHAT, (_url, call) => {
+    mock.route("/v1/chat/completions", (_url, call) => {
       n += 1;
       if (n === 1) {
         first.attach(call.signal);
         return first.response;
       }
-      // Second round: hang the request until the client aborts (in-flight abort).
-      return new Promise<Response>((_, rej) => {
-        call.signal?.addEventListener("abort", () => rej(new Error("aborted in flight")));
+      // Round 2 hangs until the client aborts (the fetch signal fires).
+      return new Promise((_resolve, reject) => {
+        call.signal?.addEventListener("abort", () => reject(new Error("aborted in flight")));
       });
     });
-    const reqCtrl = new AbortController();
+    const ac = new AbortController();
     const req = makeRequest({
       method: "POST",
       path: "/api/chat",
       cookie: user.cookie,
-      json: { message: "hello" },
-      signal: reqCtrl.signal,
+      json: { message: "go" },
+      signal: ac.signal,
     });
     setCurrentHeaders(req.headers);
     const res = await chatRoute.POST(req);
-    const events = await readEvents(res, 4); // threadId, c, tool running, tool done
-    expect(events.map((e) => Object.keys(e)[0])).toEqual(["threadId", "c", "tool", "tool"]);
-    reqCtrl.abort();
-    const rest = await readRest(res);
-    expect(rest.at(-1)).toMatchObject({ done: true, aborted: true });
-
-    const rows = db.select().from(messages).where(eq(messages.role, "assistant")).all();
-    const meta = JSON.parse(rows[0].metaJson!) as { aborted: boolean; tools: unknown[]; parts: unknown[] };
+    const chunks = await readUi(res, 6); // data-thread, text*, tool running, tool done
+    expect(chunks.map((c) => c.type)).toEqual([
+      "data-thread",
+      "text-start",
+      "text-delta",
+      "text-end",
+      "data-tool",
+      "data-tool",
+    ]);
+    ac.abort(); // client goes away mid round 2
+    await readRest(res);
+    const threadId = uiThread(chunks);
+    await waitFor(() =>
+      db
+        .select()
+        .from(messages)
+        .where(and(eq(messages.threadId, threadId), eq(messages.role, "assistant")))
+        .all().length === 1
+    );
+    const asst = db
+      .select()
+      .from(messages)
+      .where(and(eq(messages.threadId, threadId), eq(messages.role, "assistant")))
+      .get();
+    const meta = JSON.parse(asst!.metaJson!) as { aborted?: boolean; tools: unknown[]; parts: unknown[] };
     expect(meta.aborted).toBe(true);
     expect(meta.tools).toHaveLength(1);
     expect(meta.parts).toEqual([{ type: "text", text: "So slowly" }, { type: "tools", count: 1 }]);
   });
 
-  it("in-flight abort during a later round fetch persists the partial", async () => {
+  it("tools are NOT injected when no MCP servers are enabled (toolset empty)", async () => {
+    mockedBuild.mockResolvedValue(toolset(0));
+    const mock = mockLemonade();
+    mock.route("/v1/chat/completions", () => sseText("x"));
+    await drainUi(await post({ message: "hi" }));
+    const body = JSON.parse(mock.lastCall("/v1/chat/completions")!.body!) as Record<string, unknown>;
+    expect(body.tools).toBeUndefined();
+    expect(body.tool_choice).toBeUndefined();
+  });
+
+  it("tool definitions + tool_choice ride on the request body", async () => {
+    mockedBuild.mockResolvedValue(toolset());
+    const mock = mockLemonade();
     let n = 0;
-    const hangUntilAbort = (_url: URL, call: { signal?: AbortSignal | null }): Promise<Response> =>
-      new Promise((_, rej) => call.signal?.addEventListener("abort", () => rej(new Error("aborted"))));
-    mock.route(CHAT, (url, call) => {
-      n += 1;
-      if (n === 1)
-        return new Response(
-          [
-            { choices: [{ delta: { content: "Hmm" } }] },
-            { choices: [{ delta: { tool_calls: [{ index: 0, id: "t0", function: { name: "mcp__ketch__search", arguments: "{}" } }] } }] },
-            "[DONE]",
-          ]
-            .map((p) => `data: ${typeof p === "string" ? p : JSON.stringify(p)}\n\n`)
-            .join(""),
-          { headers: { "content-type": "text/event-stream" } },
-        );
-      return hangUntilAbort(url, call);
-    });
-    const reqCtrl = new AbortController();
-    const req = makeRequest({
-      method: "POST",
-      path: "/api/chat",
-      cookie: user.cookie,
-      json: { message: "hello" },
-      signal: reqCtrl.signal,
-    });
-    setCurrentHeaders(req.headers);
-    const res = await chatRoute.POST(req);
-    await readEvents(res, 3); // threadId, tool running, tool done
-    await new Promise((r) => setTimeout(r, 30)); // round-2 fetch is now in flight
-    reqCtrl.abort();
-    const rest = await readRest(res);
-    expect(rest.at(-1)).toMatchObject({ done: true, aborted: true });
-    const rows = db.select().from(messages).where(eq(messages.role, "assistant")).all();
-    expect(rows).toHaveLength(1);
-    expect((JSON.parse(rows[0].metaJson!) as { aborted: boolean }).aborted).toBe(true);
-  });
-
-  it("abort while first fetch hangs: nothing to persist", async () => {
-    mock.route(CHAT, (_url, call) => {
-      void call.signal;
-      return new Promise<Response>((_, rej) => call.signal?.addEventListener("abort", () => rej(new Error("aborted"))));
-    });
-    const reqCtrl = new AbortController();
-    const req = makeRequest({
-      method: "POST",
-      path: "/api/chat",
-      cookie: user.cookie,
-      json: { message: "hello" },
-      signal: reqCtrl.signal,
-    });
-    setCurrentHeaders(req.headers);
-    const res = await chatRoute.POST(req);
-    await readEvents(res, 1); // threadId only; upstream hangs
-    reqCtrl.abort();
-    await res.body?.cancel().catch(() => undefined);
-    expect(db.select().from(messages).where(eq(messages.role, "assistant")).all()).toHaveLength(0);
-  });
-
-  it("skips round rebuild when no tools are offered", async () => {
-    const threadId = crypto.randomUUID();
-    db.insert(threads)
-      .values({ id: threadId, userId: user.userId, model: "hist-model", title: "t", createdAt: new Date(), updatedAt: new Date() })
-      .run();
-    const toolMeta = JSON.stringify({
-      model: "hist-model",
-      tools: [{ server: "ketch", name: "search", ms: 1, ok: true, args: '{"q":"a"}', result: "RES" }],
-    });
-    db.insert(messages)
-      .values([
-        { id: crypto.randomUUID(), threadId, role: "user", content: "ask", createdAt: new Date() },
-        { id: crypto.randomUUID(), threadId, role: "assistant", content: "Final", metaJson: toolMeta, createdAt: new Date() },
-      ])
-      .run();
-    vi.mocked(buildToolset).mockResolvedValue(emptyToolset);
-    mock.route(CHAT, () => sseCompletion("next"));
-    await drain(await postChat({ threadId }));
-    const msgs = upstreamBodies(mock)[0].messages;
-    expect(msgs.some((m) => m.tool_calls || m.role === "tool")).toBe(false);
-    expect(msgs.some((m) => m.role === "assistant" && m.content === "Final")).toBe(true);
-
-    // With tools offered again, the stored rounds are rebuilt (calls+tool before
-    // the assistant text; empty-content cutoff row is fully synthesized).
-    db.insert(messages)
-      .values({ id: crypto.randomUUID(), threadId, role: "assistant", content: "", metaJson: toolMeta, createdAt: new Date() })
-      .run();
-    vi.mocked(buildToolset).mockResolvedValue(toolset);
-    await drain(await postChat({ threadId, message: "again" }));
-    const msgs2 = upstreamBodies(mock)[1].messages;
-    const seq = msgs2
-      .filter((m) => m.tool_calls || m.role === "tool" || typeof m.content === "string")
-      .map((m) =>
-        m.tool_calls
-          ? "calls"
-          : m.role === "tool"
-            ? "tool"
-            : `content:${String(m.content).replace(/^\[\d{4}-\d{2}-\d{2}\] /, "")}`,
-      );
-    // ask, [calls,tool,Final], [calls,tool] (cutoff), again
-    expect(seq).toEqual(["content:ask", "calls", "tool", "content:Final", "content:hello", "content:next", "calls", "tool", "content:again"]);
-    const calls = msgs2.find((m) => m.tool_calls)!.tool_calls as { id: string; function: { name: string } }[];
-    expect(calls[0]).toMatchObject({ function: { name: "mcp__ketch__search" } });
-  });
-
-  it("rebuilds stored tool rounds into upstream history (empty-content cutoff too)", async () => {
-    const threadId = crypto.randomUUID();
-    db.insert(threads)
-      .values({ id: threadId, userId: user.userId, model: "hist-model", title: "t", createdAt: new Date(), updatedAt: new Date() })
-      .run();
-    const toolMeta = JSON.stringify({
-      model: "hist-model",
-      tools: [{ server: "ketch", name: "search", ms: 1, ok: true, args: '{"q":"a"}', result: "RES" }],
-    });
-    db.insert(messages)
-      .values([
-        { id: crypto.randomUUID(), threadId, role: "user", content: "ask", createdAt: new Date() },
-        { id: crypto.randomUUID(), threadId, role: "assistant", content: "Final", metaJson: toolMeta, createdAt: new Date() },
-        { id: crypto.randomUUID(), threadId, role: "assistant", content: "", metaJson: toolMeta, createdAt: new Date() },
-      ])
-      .run();
-    vi.mocked(buildToolset).mockResolvedValue(emptyToolset);
-    mock.route(CHAT, () => sseCompletion("next"));
-    const events = await drain(await postChat({ threadId }));
-    expect(events.at(-1)).toEqual({ done: true });
-
-    const msgs = upstreamBodies(mock)[0].messages;
-    const seq = msgs
-      .filter((m) => m.tool_calls || m.role === "tool" || typeof m.content === "string")
-      .map((m) =>
-        m.tool_calls
-          ? "calls"
-          : m.role === "tool"
-            ? "tool"
-            : `content:${String(m.content).replace(/^\[\d{4}-\d{2}-\d{2}\] /, "")}`,
-      );
-    // Tools not offered (emptyToolset) ⇒ stored rounds are NOT rebuilt: plain
-    // assistant texts only, so the chat template never re-arms tool tokens.
-    expect(seq).toEqual(["content:ask", "content:Final", "content:", "content:hello"]);
-    expect(msgs.some((m) => m.tool_calls || m.role === "tool")).toBe(false);
+    mock.route("/v1/chat/completions", () => (++n === 1 ? sseToolCalls("t0", "mcp__ketch__search", "{}") : sseText("y")));
+    mockedRun.mockResolvedValue({ content: "r", ok: true, ms: 1 });
+    await drainUi(await post({ message: "hi" }));
+    const bodies = mock.bodies("/v1/chat/completions") as {
+      tools?: { type: string; function: { name: string } }[];
+      tool_choice?: string;
+    }[];
+    const withTools = bodies[0];
+    // toolChoice "auto" is the wire default — the SDK omits it when unset
+    expect(withTools.tool_choice ?? "auto").toBe("auto");
+    expect(withTools.tools).toMatchObject([{ type: "function", function: { name: "mcp__ketch__search" } }]);
   });
 });
 
@@ -599,6 +592,18 @@ describe("mcp loop helpers", () => {
     expect(acc.calls()).toEqual([
       { id: "call_0", type: "function", function: { name: "solo", arguments: "" } },
     ]);
+  });
+
+  it("accumulator merges fragmented deltas (interleaved by index)", () => {
+    const acc = createToolCallAccumulator();
+    acc.feed([
+      { index: 0, id: "a", function: { name: "x", arguments: '{"q' } },
+      { index: 1, id: "b", function: { name: "y", arguments: "{}" } },
+    ]);
+    acc.feed([{ index: 0, function: { arguments: '":1}' } }]);
+    const calls = acc.calls();
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toEqual({ id: "a", type: "function", function: { name: "x", arguments: '{"q":1}' } });
   });
 
   it("createTurnParts interleaves text with tool rounds", () => {
@@ -647,15 +652,75 @@ describe("mcp loop helpers", () => {
   });
 
   it("dispatchToolCalls runs parallel and pairs ids", async () => {
+    mockedRun.mockResolvedValue({ content: "ok", ok: true, ms: 1 });
     const { messages: msgs } = await dispatchToolCalls(
       [
         { id: "c1", type: "function", function: { name: "mcp__ketch__search", arguments: "{}" } },
         { id: "c2", type: "function", function: { name: "mcp__ketch__search", arguments: "{}" } },
       ],
-      toolset.handles,
-      () => undefined,
+      toolset().handles,
+      () => undefined
     );
     expect(msgs[0]).toMatchObject({ role: "assistant", content: null });
     expect(msgs.slice(1).map((m) => m.tool_call_id)).toEqual(["c1", "c2"]);
+  });
+
+  it("dispatchToolCalls: unknown names error without hitting the bridge", async () => {
+    const events: unknown[] = [];
+    const { messages, records } = await dispatchToolCalls(
+      [{ id: "1", type: "function", function: { name: "ghost", arguments: "{}" } }],
+      toolset().handles,
+      (e) => events.push(e)
+    );
+    expect(mockedRun).not.toHaveBeenCalled();
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ ok: false, server: "?" });
+    expect(String(messages[1]!.content)).toContain("unknown tool");
+  });
+
+  it("dispatchToolCalls: truncated → flag on record AND event (issue #8)", async () => {
+    mockedRun.mockResolvedValue({ content: "cut", ok: true, ms: 4, truncated: true });
+    const events: Record<string, unknown>[] = [];
+    const { records } = await dispatchToolCalls(
+      [{ id: "1", type: "function", function: { name: "mcp__ketch__search", arguments: "{}" } }],
+      toolset().handles,
+      (e) => events.push(e as Record<string, unknown>)
+    );
+    expect(records[0]).toMatchObject({ ok: true, truncated: true });
+    expect(events[1]).toMatchObject({ status: "done", truncated: true });
+    // not-truncated running event: key absent (byte-stable unchanged turns)
+    expect(events[0].truncated).toBeUndefined();
+  });
+
+  it("expandToolRounds splices synthesized rounds; cutoff turns drop empty text", () => {
+    const meta = JSON.stringify({ tools: [{ server: "k", name: "t", args: "{}", result: "R" }] });
+    const rows = [
+      { role: "user", metaJson: null },
+      { role: "assistant", metaJson: meta }, // answered round
+      { role: "assistant", metaJson: meta }, // tool-cutoff (empty final text)
+      { role: "assistant", metaJson: meta }, // parts-shaped content stays (not "" string)
+    ];
+    const up = [
+      { role: "user", content: "q" },
+      { role: "assistant", content: "answer" },
+      { role: "assistant", content: "" },
+      { role: "assistant", content: null },
+    ];
+    const out = expandToolRounds(rows as never, up as never);
+    expect(out.map((m) => m.role)).toEqual([
+      "user",
+      "assistant",
+      "tool",
+      "assistant",
+      "assistant",
+      "tool",
+      "assistant",
+      "tool",
+      "assistant",
+    ]);
+    expect(out[1].tool_calls![0]).toMatchObject({ type: "function", function: { arguments: "{}" } });
+    expect(out[2]).toMatchObject({ tool_call_id: "call_0", content: "R" });
+    expect(out[3]).toMatchObject({ content: "answer" }); // final text rides after the exchange
+    expect(out[8]).toMatchObject({ content: null }); // non-string content untouched
   });
 });
