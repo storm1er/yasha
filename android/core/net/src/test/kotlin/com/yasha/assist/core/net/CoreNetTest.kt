@@ -25,25 +25,39 @@ class SseParserTest {
     }
 
     @Test
-    fun `done sentinel and comments skipped`() {
+    fun `comments skipped, done sentinel passed through`() {
         val p = SseParser()
         val out = p.append(": ping\ndata:\ndata: [DONE]\ndata: {\"c\":\"x\"}\n\n")
-        assertEquals(listOf("{\"c\":\"x\"}"), out)
+        assertEquals(listOf("[DONE]", "{\"c\":\"x\"}"), out)
     }
 }
 
 class ChatEventsTest {
     @Test
-    fun `maps the four server event shapes`() {
-        assertEquals(ChatEvent.ThreadId("t1"), ChatEvents.parse("{\"threadId\":\"t1\"}"))
-        assertEquals(ChatEvent.Delta("hi"), ChatEvents.parse("{\"c\":\"hi\"}"))
-        assertEquals(ChatEvent.Done(false), ChatEvents.parse("{\"done\":true}"))
-        assertEquals(ChatEvent.Done(true), ChatEvents.parse("{\"done\":true,\"aborted\":true}"))
-        assertEquals(ChatEvent.Failure("busy"), ChatEvents.parse("{\"error\":\"busy\"}"))
+    fun `maps the protocol v2 frames`() {
+        // Wire shapes as emitted by lib/chat/stream.ts (captured via curl).
+        assertEquals(
+            ChatEvent.ThreadId("t1"),
+            ChatEvents.parse("""{"type":"data-thread","data":{"threadId":"t1"}}"""),
+        )
+        assertEquals(
+            ChatEvent.Delta("HELLO"),
+            ChatEvents.parse("""{"type":"text-delta","id":"t0","delta":"HELLO"}"""),
+        )
+        assertEquals(ChatEvent.Done(false), ChatEvents.parse("[DONE]"))
+        assertEquals(ChatEvent.Failure("upstream_stream"), ChatEvents.parse("""{"type":"data-error","data":{"code":"upstream_stream"}}"""))
         assertEquals(
             ChatEvent.ToolProgress("ketch", "search", "done"),
-            ChatEvents.parse("{\"tool\":{\"server\":\"ketch\",\"name\":\"search\",\"status\":\"done\"}}"),
+            ChatEvents.parse("""{"type":"data-tool","data":{"server":"ketch","name":"search","status":"done"}}"""),
         )
+    }
+
+    @Test
+    fun `bookkeeping chunks carry no app event`() {
+        assertNull(ChatEvents.parse("""{"type":"start"}"""))
+        assertNull(ChatEvents.parse("""{"type":"text-start","id":"t0"}"""))
+        assertNull(ChatEvents.parse("""{"type":"text-end","id":"t0"}"""))
+        assertNull(ChatEvents.parse("""{"type":"finish"}"""))
     }
 
     @Test
@@ -51,8 +65,8 @@ class ChatEventsTest {
         assertEquals(
             ChatEvent.ToolProgress("ketch", "search", "error", "{\"q\":\"x\"}", "tool error: boom"),
             ChatEvents.parse(
-                "{\"tool\":{\"server\":\"ketch\",\"name\":\"search\",\"status\":\"error\"," +
-                    "\"args\":\"{\\\"q\\\":\\\"x\\\"}\",\"result\":\"tool error: boom\"}}",
+                """{"type":"data-tool","data":{"server":"ketch","name":"search","status":"error",""" +
+                    """"args":"{\"q\":\"x\"}","result":"tool error: boom"}}""",
             ),
         )
     }
@@ -62,20 +76,27 @@ class ChatEventsTest {
         assertEquals(
             ChatEvent.ToolProgress("ketch", "search", "done", "{}", "…", truncated = true),
             ChatEvents.parse(
-                "{\"tool\":{\"server\":\"ketch\",\"name\":\"search\",\"status\":\"done\"," +
-                    "\"args\":\"{}\",\"result\":\"…\",\"truncated\":true}}",
+                """{"type":"data-tool","data":{"server":"ketch","name":"search","status":"done",""" +
+                    """"args":"{}","result":"…","truncated":true}}""",
             ),
         )
         // Absent flag = not truncated: pre-issue events parse unchanged.
-        val plain = ChatEvents.parse("{\"tool\":{\"server\":\"k\",\"name\":\"n\",\"status\":\"done\"}}")
+        val plain = ChatEvents.parse("""{"type":"data-tool","data":{"server":"k","name":"n","status":"done"}}""")
         assertEquals(false, (plain as ChatEvent.ToolProgress).truncated)
     }
 
     @Test
-    fun `garbage and unrelated json map to null`() {
+    fun `garbage and malformed data parts map to null`() {
         assertNull(ChatEvents.parse("not json"))
-        assertNull(ChatEvents.parse("{\"other\":1}"))
         assertNull(ChatEvents.parse("[1,2]"))
+        assertNull(ChatEvents.parse("""{"other":1}"""))
+        // v1 shapes are dead: unknown type → null, never a silent event.
+        assertNull(ChatEvents.parse("""{"threadId":"t1"}"""))
+        assertNull(ChatEvents.parse("""{"c":"hi"}"""))
+        assertNull(ChatEvents.parse("""{"done":true}"""))
+        assertNull(ChatEvents.parse("""{"type":"data-thread"}"""))
+        assertNull(ChatEvents.parse("""{"type":"data-error"}"""))
+        assertNull(ChatEvents.parse("""{"type":"text-delta","id":"t0"}"""))
     }
 }
 
