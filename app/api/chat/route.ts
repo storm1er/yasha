@@ -12,7 +12,7 @@ import {
 import { AUDIO_TURN_INSTRUCTION } from "@/lib/audio-input";
 import { db, ensureReady } from "@/lib/db";
 import { messages, threads } from "@/lib/db/schema";
-import { fastModel, getSettingInt, mcpEnabled, mcpMaxToolRounds, memoryEnabled, resolveEventConfig, smartModel } from "@/lib/settings";
+import { fastModel, getSettingInt, mcpEnabled, memoryEnabled, resolveEventConfig, smartModel } from "@/lib/settings";
 import { buildToolset, type Toolset } from "@/lib/mcp/bridge";
 import { expandToolRounds, type ChatUpstreamMessage } from "@/lib/mcp/loop";
 import { buildMemoryContext } from "@/lib/memory/recall";

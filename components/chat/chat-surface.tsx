@@ -1,167 +1,40 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AlertTriangle, Check, ChevronDown, Copy, Loader2, Menu, RefreshCw, X } from "lucide-react";
+import { DefaultChatTransport } from "ai";
+import { useChat } from "@ai-sdk/react";
 import { Sparkle } from "@/components/brand/sparkle";
 import { useChatShell } from "@/components/chat/chat-shell";
 import { CodeBlock } from "@/components/chat/code-block";
 import { Composer, type ComposerAttachment } from "@/components/chat/composer";
+import {
+  captionPending,
+  lastTurnErrored,
+  projectMessages,
+  storedToUiMessages,
+  threadIdFromMessages,
+  type ChatMessage,
+  type ChatMessageMeta,
+  type ServerMessage,
+  type ToolChip,
+  type YashaUIMessage,
+} from "@/lib/chat/ui-messages";
 import { useAudioConfig } from "@/lib/browser/use-audio-input";
 import type { ModelCapabilities } from "@/components/chat/model-picker";
 import { Button } from "@/components/ui/button";
-
-type ToolChip = {
-  server: string;
-  name: string;
-  status: "running" | "done" | "error";
-  /** JSON arguments string — present once the call is known (live or stored). */
-  args?: string;
-  /** Tool output (or error text) — present on terminal states. */
-  result?: string;
-  /** Result was cut at the server-side cap → amber warn chip (issue #8). */
-  truncated?: boolean;
-};
-
-/** Ordered rendering segment of an assistant turn (issue #7): tool chips
- *  interleaved with the surrounding text in execution order. Built live from
- *  SSE arrival order and from `meta.parts` for stored turns; absent (legacy
- *  rows / plain text turns) means "chips above the text" as before. */
-type MessageSegment =
-  | { kind: "text"; text: string }
-  | { kind: "tools"; tools: ToolChip[] };
-
-type ChatMessage = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  images?: string[];
-  audio?: string;
-  audioTranscript?: string | null;
-  audioTranscriptFailed?: boolean;
-  audioCaptionPending?: boolean;
-  tools?: ToolChip[];
-  segments?: MessageSegment[];
-  streaming?: boolean;
-  /** Set when the assistant turn for this user message failed upstream
-   *  (persisted in meta.error) — renders the red retry notice. */
-  turnError?: string;
-};
-
-type ServerEvent = {
-  threadId?: string;
-  c?: string;
-  tool?: ToolChip;
-  error?: string;
-  done?: boolean;
-  aborted?: boolean;
-};
 
 const MD_COMPONENTS: Components = {
   pre: ({ children }: { children?: ReactNode }) => <CodeBlock>{children}</CodeBlock>,
 };
 
-type ServerMessage = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  meta?: {
-    images?: unknown;
-    tools?: unknown;
-    parts?: unknown;
-    audio?: unknown;
-    audioTranscript?: unknown;
-    audioTranscriptFailed?: unknown;
-    error?: unknown;
-  } | null;
-};
-
-/** Stored `meta.parts` + the flat tool chips → ordered segments; undefined on
- *  any mismatch (legacy rows, malformed data) so rendering falls back to
- *  "chips above text". `tools` parts consume the flat list in order. */
-function mapSegments(parts: unknown, tools: ToolChip[] | undefined): MessageSegment[] | undefined {
-  if (!Array.isArray(parts) || !tools) return undefined;
-  const out: MessageSegment[] = [];
-  let i = 0;
-  for (const raw of parts) {
-    if (!raw || typeof raw !== "object") return undefined;
-    const part = raw as { type?: unknown; text?: unknown; count?: unknown };
-    if (part.type === "text") {
-      if (typeof part.text !== "string") return undefined;
-      out.push({ kind: "text", text: part.text });
-    } else if (part.type === "tools") {
-      const n =
-        typeof part.count === "number" && Number.isInteger(part.count) && part.count >= 0
-          ? part.count
-          : -1;
-      if (n < 0 || i + n > tools.length) return undefined;
-      out.push({ kind: "tools", tools: tools.slice(i, i + n) });
-      i += n;
-    } else {
-      return undefined;
-    }
-  }
-  return i === tools.length ? out : undefined;
-}
-
-function mapMessage(m: ServerMessage): ChatMessage {
-  const images = Array.isArray(m.meta?.images)
-    ? m.meta!.images!.filter((s): s is string => typeof s === "string")
-    : undefined;
-  const audio = typeof m.meta?.audio === "string" ? m.meta!.audio : undefined;
-  const audioTranscript =
-    typeof m.meta?.audioTranscript === "string" ? m.meta!.audioTranscript : undefined;
-  const audioTranscriptFailed = m.meta?.audioTranscriptFailed === true;
-  const turnError = typeof m.meta?.error === "string" ? m.meta.error : undefined;
-  const tools = Array.isArray(m.meta?.tools)
-    ? m.meta!.tools!.filter(
-        (t): t is ToolChip & { ok: boolean } =>
-          !!t &&
-          typeof t === "object" &&
-          typeof (t as ToolChip).server === "string" &&
-          typeof (t as ToolChip).name === "string" &&
-          typeof (t as { ok?: unknown }).ok === "boolean",
-      )
-    : undefined;
-  const chips = tools?.length
-    ? tools.map((t) => ({
-        server: t.server,
-        name: t.name,
-        status: t.ok ? ("done" as const) : ("error" as const),
-        args: typeof t.args === "string" ? t.args : undefined,
-        result: typeof t.result === "string" ? t.result : undefined,
-        truncated: t.truncated === true ? true : undefined,
-      }))
-    : undefined;
-  return {
-    id: m.id,
-    role: m.role,
-    content: m.content,
-    images,
-    audio,
-    audioTranscript,
-    audioTranscriptFailed,
-    turnError,
-    tools: chips,
-    segments: mapSegments(m.meta?.parts, chips),
-  };
-}
-
-/** True while a stored audio message has no caption outcome yet (job pending
- *  or never enqueued — the caller decides between pending/unavailable). */
-function captionPending(m: ServerMessage): boolean {
-  const meta = m.meta;
-  return Boolean(
-    meta &&
-      typeof meta === "object" &&
-      typeof meta.audio === "string" &&
-      typeof meta.audioTranscript !== "string" &&
-      meta.audioTranscriptFailed !== true,
-  );
+function prefersReduced(): boolean {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
 function formatToolJson(s: string): string {
@@ -188,7 +61,13 @@ function ToolChipRow({
   );
 }
 
-function ToolSegments({ segments, label }: { segments: MessageSegment[]; label: (status: ToolChip["status"], name: string) => string }) {
+function ToolSegments({
+  segments,
+  label,
+}: {
+  segments: NonNullable<ChatMessage["segments"]>;
+  label: (status: ToolChip["status"], name: string) => string;
+}) {
   return (
     <>
       {segments.map((seg, i) =>
@@ -278,37 +157,14 @@ function ToolChipView({ tool, label }: { tool: ToolChip; label: string }) {
   );
 }
 
-function parseSse(buffer: string): { events: ServerEvent[]; rest: string } {
-  const events: ServerEvent[] = [];
-  const parts = buffer.split("\n\n");
-  const rest = parts.pop() ?? "";
-  for (const part of parts) {
-    for (const line of part.split("\n")) {
-      if (!line.startsWith("data:")) continue;
-      try {
-        events.push(JSON.parse(line.slice(5).trim()) as ServerEvent);
-      } catch {
-        /* ignore malformed */
-      }
-    }
-  }
-  return { events, rest };
-}
-
-function prefersReduced(): boolean {
-  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-}
-
 export function ChatSurface({ initialThreadId }: { initialThreadId: string | null }) {
   const t = useTranslations("chat");
   const tc = useTranslations("common");
   const router = useRouter();
   const shell = useChatShell();
 
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
-  const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showFab, setShowFab] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -316,13 +172,16 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
   const [threadModel, setThreadModel] = useState<string | null>(null);
   const [lightbox, setLightbox] = useState<string | null>(null);
   const [loadingHistory, setLoadingHistory] = useState(initialThreadId !== null);
-  const lastFailed = useRef<{ id: string; text: string; images?: string[]; audio?: string } | null>(null);
 
   const threadIdRef = useRef<string | null>(initialThreadId);
-  const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickRef = useRef(true);
   const selectedModelRef = useRef<string | null>(null);
+  // Bookkeeping for the in-flight send: what went out (voice → caption poll)
+  // and whether it adopted a brand-new thread (sidebar title await).
+  const pendingSendRef = useRef<{ audio?: string } | null>(null);
+  const createdThreadRef = useRef<string | null>(null);
+  const pollGenRef = useRef(0);
 
   // The picker reports its effective value on init (thread model > stored >
   // default) and on every change, so this ref always mirrors what is shown.
@@ -330,17 +189,169 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
     selectedModelRef.current = id;
   }, []);
 
+  // Server-authoritative transport (D1): the wire body carries ONLY the new
+  // user turn (+ thread, model, attachments) — history lives in the DB and
+  // the response is protocol v2 (lib/chat/stream.ts).
+  const transport = useMemo(
+    () =>
+      new DefaultChatTransport<YashaUIMessage>({
+        api: "/api/chat",
+        fetch: (url, init) =>
+          globalThis.fetch(url, init).then((res) => {
+            if (res.status === 401) router.replace("/login");
+            return res;
+          }),
+        // The real body is assembled per send (see send()) and arrives via
+        // ChatRequestOptions.body — the transport itself stays stateless.
+        prepareSendMessagesRequest: ({ body }) => ({ body: body ?? {} }),
+      }),
+    [router]
+  );
+
+  const { messages, setMessages, sendMessage, stop, status } = useChat<YashaUIMessage>({
+    transport,
+    // Transport-level failure (HTTP status, network death): the sent user
+    // message stays visible next to the error + Retry action below.
+    onError: () => setError("error"),
+  });
+  const streaming = status === "submitted" || status === "streaming";
+  const projected = useMemo(() => projectMessages(messages, streaming), [messages, streaming]);
+
+  // Voice-message captions: after a voice turn (or a caption retry), poll the
+  // thread until the background caption job lands (bounded — 8 × 4 s).
+  const pollCaptions = useCallback(
+    async (threadId: string, isCancelled: () => boolean) => {
+      for (let i = 0; i < 8; i++) {
+        await new Promise<void>((r) => setTimeout(r, 4000));
+        if (isCancelled()) return;
+        try {
+          const res = await fetch(`/api/threads/${threadId}`, { cache: "no-store" });
+          if (!res.ok) return;
+          const data = (await res.json()) as { messages: ServerMessage[] };
+          if (isCancelled()) return;
+          const pending = data.messages.some(captionPending);
+          if (!pending || i === 7) {
+            setMessages(storedToUiMessages(data.messages));
+            return;
+          }
+        } catch {
+          return;
+        }
+      }
+    },
+    [setMessages]
+  );
+
+  const retryCaption = useCallback(
+    async (messageId: string, threadId: string) => {
+      try {
+        const res = await fetch(`/api/chat/messages/${messageId}/transcribe`, { method: "POST" });
+        if (!res.ok) return;
+      } catch {
+        return;
+      }
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === messageId
+            ? {
+                ...m,
+                metadata: { ...m.metadata, audioTranscriptFailed: false, audioCaptionPending: true },
+              }
+            : m
+        )
+      );
+      const gen = ++pollGenRef.current;
+      void pollCaptions(threadId, () => pollGenRef.current !== gen || threadIdRef.current !== threadId);
+    },
+    [pollCaptions, setMessages]
+  );
+
+  /** Reload a thread after a failed turn so the server-persisted error
+   *  annotation (meta.error) renders as the in-thread retry notice. */
+  const resyncThread = useCallback(
+    async (threadId: string) => {
+      try {
+        const res = await fetch(`/api/threads/${threadId}`, { cache: "no-store" });
+        if (!res.ok) {
+          setError("error");
+          return;
+        }
+        const data = (await res.json()) as { messages: ServerMessage[] };
+        setMessages(storedToUiMessages(data.messages));
+      } catch {
+        setError("error");
+      }
+    },
+    [setMessages]
+  );
+
+  // Thread adoption: the first data-thread part of a brand-new conversation
+  // rewrites the URL without a navigation (v1 parity).
   useEffect(() => {
-    threadIdRef.current = initialThreadId;
-    // Deferred to a microtask so it lands before paint without being a
-    // synchronous setState inside the effect body; the async branches below
-    // (fetch callbacks) are allowed.
+    if (threadIdRef.current) return;
+    const tid = threadIdFromMessages(messages);
+    if (!tid) return;
+    threadIdRef.current = tid;
+    createdThreadRef.current = tid;
+    window.history.replaceState(null, "", `/c/${tid}`);
+    shell.notifyActiveThread(tid);
+  }, [messages, shell]);
+
+  // Failed turns: the terminal data-error part means the server annotated the
+  // user message (meta.error) — resync so the in-thread retry notice renders.
+  useEffect(() => {
+    if (streaming) return;
+    const tid = threadIdRef.current;
+    if (tid && lastTurnErrored(messages)) void resyncThread(tid);
+  }, [messages, streaming, resyncThread]);
+
+  // Turn-finished bookkeeping (v1's send-finally): sidebar refresh + title
+  // polling for fresh threads, caption polling for voice turns.
+  const prevStatusRef = useRef(status);
+  useEffect(() => {
+    const prev = prevStatusRef.current;
+    prevStatusRef.current = status;
+    if (prev !== "submitted" && prev !== "streaming") return;
+    if (status !== "ready" && status !== "error") return;
+    shell.refreshThreads();
+    const created = createdThreadRef.current;
+    createdThreadRef.current = null;
+    if (created) shell.awaitThreadTitle(created);
+    const sent = pendingSendRef.current;
+    if (sent?.audio && threadIdRef.current) {
+      const tid = threadIdRef.current;
+      const gen = ++pollGenRef.current;
+      void pollCaptions(tid, () => pollGenRef.current !== gen || threadIdRef.current !== tid);
+    }
+  }, [status, shell, pollCaptions]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !stickRef.current) return;
+    el.scrollTo({
+      top: el.scrollHeight,
+      behavior: streaming && !prefersReduced() ? "auto" : "smooth",
+    });
+  }, [projected, streaming]);
+
+  // Thread navigation (sidebar, /c/new, delete → router): load from the API
+  // and swap the chat state wholesale. The null branch deliberately does NOT
+  // touch messages: the history.replaceState on thread adoption makes Next's
+  // HistoryUpdater re-render with a fresh router object, and this effect
+  // re-running then would abort and wipe the in-flight turn (thread→new
+  // clearing is startNewChat's job instead).
+  useEffect(() => {
+    // Never overwrite an adopted thread id with the still-null prop (the
+    // adoption replaceState re-fires this effect with initialThreadId=null).
+    threadIdRef.current = initialThreadId ?? threadIdRef.current;
     const run = async () => {
       setLoadingHistory(initialThreadId !== null);
       if (!initialThreadId) {
         setThreadModel(null);
         return;
       }
+      stop(); // a turn from a previous thread must not stream into this one
+      createdThreadRef.current = null;
       shell.notifyActiveThread(initialThreadId);
       const res = await fetch(`/api/threads/${initialThreadId}`, { cache: "no-store" });
       if (res.status === 404 || res.status === 403) {
@@ -363,7 +374,7 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
         stickRef.current = true;
         setLoadingHistory(false);
         setThreadModel(data.thread?.model ?? null);
-        setMessages(data.messages.map(mapMessage));
+        setMessages(storedToUiMessages(data.messages));
       }
     };
     let alive = true;
@@ -376,278 +387,57 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
     return () => {
       alive = false;
     };
-  }, [initialThreadId, router, shell]);
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el || !stickRef.current) return;
-    el.scrollTo({
-      top: el.scrollHeight,
-      behavior: streaming && !prefersReduced() ? "auto" : "smooth",
-    });
-  }, [messages, streaming]);
-
-  // Voice-message captions: after a voice turn (or a caption retry), poll the
-  // thread until the background caption job lands (bounded — 8 × 4 s).
-  const pollGenRef = useRef(0);
-  const pollCaptions = useCallback(async (threadId: string, isCancelled: () => boolean) => {
-    for (let i = 0; i < 8; i++) {
-      await new Promise<void>((r) => setTimeout(r, 4000));
-      if (isCancelled()) return;
-      try {
-        const res = await fetch(`/api/threads/${threadId}`, { cache: "no-store" });
-        if (!res.ok) return;
-        const data = (await res.json()) as { messages: ServerMessage[] };
-        if (isCancelled()) return;
-        const pending = data.messages.some(captionPending);
-        if (!pending || i === 7) {
-          setMessages(data.messages.map(mapMessage));
-          return;
-        }
-      } catch {
-        return;
-      }
-    }
-  }, []);
-
-  const retryCaption = useCallback(
-    async (messageId: string, threadId: string) => {
-      try {
-        const res = await fetch(`/api/chat/messages/${messageId}/transcribe`, { method: "POST" });
-        if (!res.ok) return;
-      } catch {
-        return;
-      }
-      setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, audioTranscriptFailed: false, audioCaptionPending: true } : m)));
-      const gen = ++pollGenRef.current;
-      void pollCaptions(threadId, () => pollGenRef.current !== gen || threadIdRef.current !== threadId);
-    },
-    [pollCaptions]
-  );
-
-  /** Reload a thread after a failed turn so the server-persisted error
-   *  annotation (meta.error) renders as the in-thread retry notice. */
-  const resyncThread = useCallback(async (threadId: string) => {
-    try {
-      const res = await fetch(`/api/threads/${threadId}`, { cache: "no-store" });
-      if (!res.ok) {
-        setError("error");
-        return;
-      }
-      const data = (await res.json()) as { messages: ServerMessage[] };
-      setMessages(data.messages.map(mapMessage));
-    } catch {
-      setError("error");
-    }
-  }, []);
+  }, [initialThreadId, router, shell, setMessages, stop]);
 
   const send = useCallback(
-    async (rawText: string, images?: string[], audioUrl?: string) => {
+    (rawText: string, images?: string[], audioUrl?: string) => {
       const text = rawText.trim();
       const imgs = images?.length ? images : undefined;
       const audio = audioUrl || undefined;
       if ((!text && !imgs && !audio) || streaming) return;
       setError(null);
-      lastFailed.current = null;
+      pendingSendRef.current = { audio };
+      createdThreadRef.current = null;
       setInput("");
       setAttachments([]);
       stickRef.current = true;
-
-      const tempUserId = `temp-user-${Date.now()}`;
-      const tempAssistantId = `temp-assistant-${Date.now()}`;
-      setMessages((prev) => [
-        ...prev,
-        { id: tempUserId, role: "user", content: text, images: imgs, audio },
-      ]);
-
-      const ctrl = new AbortController();
-      abortRef.current = ctrl;
-      setStreaming(true);
-      let assistantStarted = false;
-      let sseError: string | null = null;
-
-      const fail = () => {
-        setError("error");
-        lastFailed.current = { id: tempUserId, text, images: imgs, audio };
-        // The sent message stays visible next to the error + Retry action.
-        setMessages((prev) =>
-          prev
-            .filter((m) => !(m.id === tempAssistantId && m.content === ""))
-            .map((m) => (m.id === tempAssistantId ? { ...m, streaming: false } : m))
-        );
-      };
-
-      let createdThread: string | null = null;
-      try {
-        const payload: Record<string, unknown> = { threadId: threadIdRef.current, message: text };
-        if (imgs || audio) {
-          const attachments: Record<string, unknown> = {};
-          if (imgs) attachments.images = imgs;
-          if (audio) attachments.audio = audio;
-          payload.attachments = attachments;
-        }
-        // The displayed picker value is the source of truth for every turn.
-        if (selectedModelRef.current) payload.model = selectedModelRef.current;
-        const res = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-          signal: ctrl.signal,
-        });
-        if (res.status === 401) {
-          router.replace("/login");
-          return;
-        }
-        if (!res.ok || !res.body) {
-          fail();
-          return;
-        }
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-
-      const ensureAssistant = () => {
-        if (assistantStarted) return;
-        assistantStarted = true;
-        setMessages((prev) => [
-          ...prev,
-          { id: tempAssistantId, role: "assistant", content: "", streaming: true },
-        ]);
-      };
-
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const { events, rest } = parseSse(buffer);
-        buffer = rest;
-        for (const ev of events) {
-          if (ev.threadId && !threadIdRef.current) {
-            threadIdRef.current = ev.threadId;
-            createdThread = ev.threadId;
-            window.history.replaceState(null, "", `/c/${ev.threadId}`);
-            shell.notifyActiveThread(ev.threadId);
-          }
-          if (typeof ev.c === "string") {
-            if (!assistantStarted) {
-              assistantStarted = true;
-              setMessages((prev) => [
-                ...prev,
-                {
-                  id: tempAssistantId,
-                  role: "assistant",
-                  content: ev.c!,
-                  segments: [{ kind: "text", text: ev.c! }],
-                  streaming: true,
-                },
-              ]);
-            } else {
-              setMessages((prev) =>
-                prev.map((m) => {
-                  if (m.id !== tempAssistantId) return m;
-                  // Live ordering = SSE arrival order: deltas extend the
-                  // trailing text segment (a chip in between started a new one).
-                  const segments = [...(m.segments ?? [])];
-                  const last = segments[segments.length - 1];
-                  if (last && last.kind === "text") {
-                    segments[segments.length - 1] = { kind: "text", text: last.text + ev.c };
-                  } else {
-                    segments.push({ kind: "text", text: ev.c! });
-                  }
-                  return { ...m, content: m.content + ev.c, segments };
-                })
-              );
-            }
-          }
-          if (ev.tool) {
-            ensureAssistant();
-            setMessages((prev) =>
-              prev.map((m) => {
-                if (m.id !== tempAssistantId) return m;
-                const tools = [...(m.tools ?? [])];
-                const idx = tools.findIndex(
-                  (tc) =>
-                    tc.status === "running" && tc.server === ev.tool!.server && tc.name === ev.tool!.name,
-                );
-                if (idx >= 0) tools[idx] = ev.tool!;
-                else tools.push(ev.tool!);
-                const segments = [...(m.segments ?? [])];
-                const last = segments[segments.length - 1];
-                if (last && last.kind === "tools") {
-                  const seg = [...last.tools];
-                  const segIdx = seg.findIndex(
-                    (tc) =>
-                      tc.status === "running" &&
-                      tc.server === ev.tool!.server &&
-                      tc.name === ev.tool!.name,
-                  );
-                  if (segIdx >= 0) seg[segIdx] = ev.tool!;
-                  else seg.push(ev.tool!);
-                  segments[segments.length - 1] = { kind: "tools", tools: seg };
-                } else {
-                  segments.push({ kind: "tools", tools: [ev.tool!] });
-                }
-                return { ...m, tools, segments };
-              })
-            );
-          }
-          if (ev.error) {
-            // The server kept the user message and annotated it with the error
-            // code; re-sync the thread so the failure notice renders in place.
-            sseError = String(ev.error);
-          }
-        }
+      const meta: ChatMessageMeta = {};
+      if (imgs) meta.images = imgs;
+      if (audio) meta.audio = audio;
+      // v1 wire body: { threadId, message, model?, attachments? } — built at
+      // send time (server rebuilds the history itself).
+      const body: Record<string, unknown> = { threadId: threadIdRef.current, message: text };
+      if (imgs || audio) {
+        const sendAttachments: Record<string, unknown> = {};
+        if (imgs) sendAttachments.images = imgs;
+        if (audio) sendAttachments.audio = audio;
+        body.attachments = sendAttachments;
       }
-        // Clear the transient streaming flag on the assistant bubble for every
-        // terminal path (done, error, or silent end).
-        setMessages((prev) =>
-          prev.map((m) => (m.id === tempAssistantId ? { ...m, streaming: false } : m))
-        );
-      } catch {
-        if (!ctrl.signal.aborted) fail();
-        setMessages((prev) =>
-          prev.map((m) => (m.id === tempAssistantId ? { ...m, streaming: false } : m))
-        );
-      } finally {
-        setStreaming(false);
-        abortRef.current = null;
-        shell.refreshThreads();
-        // The async title job lands seconds later: poll the list until the
-        // placeholder is replaced so the sidebar updates without a reload.
-        if (createdThread) shell.awaitThreadTitle(createdThread);
-        // Voice turn: poll for the background caption (AUDIO-REFACTO-PLAN §6).
-        if (audio && threadIdRef.current) {
-          const tid = threadIdRef.current;
-          const gen = ++pollGenRef.current;
-          void pollCaptions(tid, () => pollGenRef.current !== gen || threadIdRef.current !== tid);
-        }
-        if (sseError && threadIdRef.current) void resyncThread(threadIdRef.current);
-      }
+      if (selectedModelRef.current) body.model = selectedModelRef.current;
+      void sendMessage(
+        Object.keys(meta).length > 0 ? { text, metadata: meta } : { text },
+        { body }
+      );
     },
-    [streaming, router, shell, pollCaptions, resyncThread]
+    [streaming, sendMessage]
   );
-
-  const stop = useCallback(() => {
-    abortRef.current?.abort();
-  }, []);
 
   /** Resend a user turn (retry after failure / regenerate): a trailing failed
    *  row is dropped from the list first — the server replaces it on the wire. */
   function retryTurn(m: ChatMessage) {
     if (streaming) return;
     setError(null);
-    lastFailed.current = null;
     setMessages((prev) => (prev.at(-1)?.id === m.id ? prev.filter((x) => x.id !== m.id) : prev));
-    void send(m.content, m.images, m.audio);
+    send(m.content, m.images, m.audio);
   }
 
   const startNewChat = useCallback(() => {
     // Reset local state first: after the first message the thread URL is set
     // via history.replaceState, which does not update router state, so
     // router.push("/c/new") would be a no-op while the path says otherwise.
-    abortRef.current?.abort();
+    stop();
     threadIdRef.current = null;
+    createdThreadRef.current = null;
     setLoadingHistory(false);
     setMessages([]);
     setAttachments([]);
@@ -656,18 +446,22 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
     shell.notifyActiveThread(null);
     const path = window.location.pathname.replace(/\/$/, "");
     if (path !== "/c/new") router.push("/c/new");
-  }, [router, shell]);
+  }, [router, shell, setMessages, stop]);
 
-  const threadDeleted = useCallback((threadId: string) => {
-    if (threadIdRef.current === threadId) {
-      threadIdRef.current = null;
-      setLoadingHistory(false);
-      setMessages([]);
-      setAttachments([]);
-      setThreadModel(null);
-      window.history.replaceState(null, "", "/c/new");
-    }
-  }, []);
+  const threadDeleted = useCallback(
+    (threadId: string) => {
+      if (threadIdRef.current === threadId) {
+        stop();
+        threadIdRef.current = null;
+        setLoadingHistory(false);
+        setMessages([]);
+        setAttachments([]);
+        setThreadModel(null);
+        window.history.replaceState(null, "", "/c/new");
+      }
+    },
+    [setMessages, stop]
+  );
 
   useEffect(() => {
     shell.setSurfaceHandlers({ newChat: startNewChat, threadDeleted });
@@ -702,7 +496,7 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
     setShowFab(false);
   }
 
-  const showHero = messages.length === 0 && !streaming && !loadingHistory;
+  const showHero = projected.length === 0 && !streaming && !loadingHistory;
   const toolLabel = (status: ToolChip["status"], name: string) =>
     status === "running"
       ? t("toolRunning", { name })
@@ -710,9 +504,9 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
         ? t("toolDone", { name })
         : t("toolError", { name });
   const awaitingFirstToken =
-    streaming && !messages.some((m) => m.role === "assistant" && m.streaming);
-  const lastAssistantId = messages.filter((m) => m.role === "assistant").at(-1)?.id;
-  const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
+    streaming && !projected.some((m) => m.role === "assistant" && m.streaming);
+  const lastAssistantId = projected.filter((m) => m.role === "assistant").at(-1)?.id;
+  const lastUserMsg = projected.findLast((m) => m.role === "user");
 
   function regenerate() {
     if (!lastUserMsg || streaming) return;
@@ -747,7 +541,7 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
   const composerProps = {
     value: input,
     onChange: setInput,
-    onSubmit: () => void send(input, attachments.map((a) => a.dataUrl)),
+    onSubmit: () => send(input, attachments.map((a) => a.dataUrl)),
     streaming,
     onStop: stop,
     onModelChange: handleModelChange,
@@ -758,7 +552,7 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
     audioEnabled: audioCfg.enabled,
     smartModelId: audioCfg.smartModel,
     maxAudioBytes: audioCfg.maxAudioBytes,
-    onAudioRecorded: (dataUrl: string) => void send(input, attachments.map((a) => a.dataUrl), dataUrl),
+    onAudioRecorded: (dataUrl: string) => send(input, attachments.map((a) => a.dataUrl), dataUrl),
   };
 
   return (
@@ -799,7 +593,7 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
         >
           {!showHero && (
             <div className="mx-auto flex w-full max-w-[720px] flex-col gap-6 px-4 py-6">
-              {messages.map((m) => (
+              {projected.map((m) => (
                 <div key={m.id} data-testid={`msg-${m.role}`} className="msg-enter flex gap-3">
                   {m.role === "user" ? (
                     <div className="ml-auto flex max-w-[88%] flex-col items-end gap-2">
@@ -847,7 +641,7 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
                                 className="font-medium text-primary underline underline-offset-2"
                                 onClick={() => {
                                   const tid = threadIdRef.current;
-                                  if (tid && !m.id.startsWith("temp-")) void retryCaption(m.id, tid);
+                                  if (tid) void retryCaption(m.id, tid);
                                 }}
                               >
                                 {t("captionRetry")}
@@ -956,15 +750,12 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
             className="relative z-20 mx-auto flex w-full max-w-[720px] flex-wrap items-center justify-center gap-x-3 gap-y-1 px-4 pb-1 text-sm text-destructive"
           >
             <span>{t("error")}</span>
-            {lastFailed.current && (
+            {lastUserMsg && (
               <Button
                 size="xs"
                 variant="link"
                 className="h-auto p-0 text-destructive"
-                onClick={() => {
-                  const f = lastFailed.current;
-                  if (f) retryTurn({ id: f.id, role: "user", content: f.text, images: f.images, audio: f.audio });
-                }}
+                onClick={() => retryTurn(lastUserMsg)}
               >
                 {t("retry")}
               </Button>
