@@ -14,6 +14,7 @@
 // `data-error` (triggers a thread resync; the notice renders from meta.error).
 
 import type { TextUIPart, UIMessage } from "ai";
+import { parseGenerativeCard, type GenerativeCard } from "@/lib/chat/generative";
 
 export type ToolChip = {
   server: string;
@@ -25,6 +26,9 @@ export type ToolChip = {
   result?: string;
   /** Result was cut at the server-side cap → amber warn chip (issue #8). */
   truncated?: boolean;
+  /** Generative UI (issue #16): structured card from a valid yasha_card tool
+   *  result — rendered under the chip; absent for plain results. */
+  card?: GenerativeCard;
 };
 
 /** Ordered rendering segment of an assistant turn (issue #7): tool chips
@@ -128,14 +132,20 @@ function storedChips(tools: unknown): ToolChip[] {
         typeof (t as { name?: unknown }).name === "string" &&
         typeof (t as { ok?: unknown }).ok === "boolean",
     )
-    .map((t) => ({
-      server: t.server as string,
-      name: t.name as string,
-      status: t.ok ? ("done" as const) : ("error" as const),
-      args: typeof t.args === "string" ? t.args : undefined,
-      result: typeof t.result === "string" ? t.result : undefined,
-      truncated: t.truncated === true ? true : undefined,
-    }));
+    .map((t) => {
+      const card = parseGenerativeCard(t.card);
+      return {
+        server: t.server as string,
+        name: t.name as string,
+        status: t.ok ? ("done" as const) : ("error" as const),
+        args: typeof t.args === "string" ? t.args : undefined,
+        result: typeof t.result === "string" ? t.result : undefined,
+        truncated: t.truncated === true ? true : undefined,
+        // Malformed persisted cards degrade to no-card (stored data is trusted
+        // but re-validated — the renderer must never see a partial shape).
+        ...(card ? { card } : {}),
+      };
+    });
 }
 
 /**

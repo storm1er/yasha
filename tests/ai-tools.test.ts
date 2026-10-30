@@ -121,4 +121,30 @@ describe("createAiToolLoop", () => {
     expect(loop.flushRemaining()).toEqual([]); // drained, incl. raw-arg state
     expect(loop.takeRound([{ toolCallId: "x1" }])).toEqual([]);
   });
+
+  // Generative UI (issue #16): a valid yasha_card envelope rides the terminal
+  // event and the persisted record; anything else stays a plain result.
+  it("valid yasha_card envelope → card on the terminal event AND the record", async () => {
+    const envelope = JSON.stringify({ yasha_card: { kind: "weather", title: "Nice", body: "Sunny" } });
+    mockedRun.mockResolvedValue({ content: envelope, ok: true, ms: 3 });
+    const tool = loop.tools!.t1 as ExecutableTool;
+    const out = await tool.execute!({}, { toolCallId: "gc1", abortSignal: undefined });
+    expect(out).toBe(envelope); // model still sees the raw result
+    expect(events[1]).toMatchObject({ status: "done", card: { kind: "weather", title: "Nice", body: "Sunny" } });
+    expect(loop.takeRound([{ toolCallId: "gc1" }])[0]).toMatchObject({
+      card: { kind: "weather", title: "Nice", body: "Sunny" },
+    });
+  });
+
+  it("invalid envelope or failed call → no card field at all", async () => {
+    mockedRun.mockResolvedValue({ content: '{"yasha_card":{"noTitle":1}}', ok: true, ms: 1 });
+    const tool = loop.tools!.t1 as ExecutableTool;
+    await tool.execute!({}, { toolCallId: "gc2", abortSignal: undefined });
+    expect(events[1]).not.toHaveProperty("card");
+
+    events = [];
+    mockedRun.mockResolvedValue({ content: '{"yasha_card":{"title":"x"}}', ok: false, ms: 1 });
+    await tool.execute!({}, { toolCallId: "gc3", abortSignal: undefined });
+    expect(events[1]).not.toHaveProperty("card"); // errors never surface cards
+  });
 });

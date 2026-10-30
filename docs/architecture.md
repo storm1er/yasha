@@ -52,6 +52,10 @@ How Yasha works internally. Product-level description lives in the [README](../R
    bounded tool rounds (`streamText` + `stopWhen: stepCountIs(...)`): MCP tools are exposed as
    AI SDK tools (`lib/mcp/ai-tools.ts` over `lib/mcp/client.ts`, stdio or HTTP;
    `lib/mcp/oauth/` for OAuth'd remote servers) and chip events stream out as `data-tool` parts.
+   A tool result may be a `yasha_card` envelope (`lib/chat/generative.ts`): a validated
+   `card` field then rides the terminal `data-tool` part and the persisted `meta.tools`
+   entry (generative UI, issue #16) — both clients render a structured card under the chip,
+   old clients keep showing the raw result.
 4. Memory recall (FTS5 + optional summaries) is injected per `lib/memory/recall.ts`.
 5. Generation is AI SDK `streamText` against the provider's chat-completions endpoint
    (`lib/provider/language-model.ts`; first-token timeout guarded); reasoning deltas are dropped,

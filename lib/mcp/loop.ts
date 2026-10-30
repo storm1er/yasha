@@ -5,6 +5,7 @@
 
 import { openAiToolName, runToolCall, type ToolHandle } from "./bridge";
 import type { UpstreamContentPart } from "@/lib/chat-attachments";
+import type { GenerativeCard } from "@/lib/chat/generative";
 
 export type OpenAiToolCall = {
   id: string;
@@ -32,6 +33,10 @@ export type ToolEvent = {
   /** Present (true) only when the result was cut at `mcp.toolResultMaxChars`
    *  — renders the amber warn chip live and after a thread reload. */
   truncated?: boolean;
+  /** Generative UI (issue #16): set on the terminal event when the result was
+   *  a valid `yasha_card` envelope — both clients render a structured card
+   *  under the chip; old clients keep showing the raw result. */
+  card?: GenerativeCard;
 };
 export type ToolRoundRecord = {
   server: string;
@@ -41,6 +46,8 @@ export type ToolRoundRecord = {
   args: string;
   result: string;
   truncated?: boolean;
+  /** Persisted alongside the record (meta.tools) — same envelope as above. */
+  card?: GenerativeCard;
 };
 
 /** Accumulates `delta.tool_calls` fragments (index-keyed, args concatenated). */

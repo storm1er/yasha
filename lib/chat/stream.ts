@@ -3,7 +3,9 @@
 // Transport contract (protocol v2, UI message stream):
 //   data-thread {threadId}        custom part, first frame of every turn
 //   text-start / text-delta / text-end  assistant text (per-step remapped ids)
-//   data-tool   ToolEvent         live tool-chip state machine (mirrors v1)
+//   data-tool   ToolEvent         live tool-chip state machine (mirrors v1);
+//               terminal events may carry `card` (issue #16 generative UI —
+//               lib/chat/generative.ts), persisted on meta.tools entries
 //   data-error  {code}            terminal failure (timeout / upstream_* / empty_response)
 //   [DONE]      by createUIMessageStreamResponse; keepAliveMs carries the
 //               idle-proxy heartbeat (replaces the hand-rolled `: ping`).

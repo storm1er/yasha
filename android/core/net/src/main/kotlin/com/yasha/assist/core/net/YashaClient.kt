@@ -66,6 +66,15 @@ object ChatEvents {
                         args = tool["args"]?.jsonPrimitive?.contentOrNull,
                         result = tool["result"]?.jsonPrimitive?.contentOrNull,
                         truncated = tool["truncated"]?.jsonPrimitive?.booleanOrNull == true,
+                        // Issue #16: validated server-side, but decode defensively —
+                        // an unexpected shape degrades to a plain chip.
+                        card = (tool["card"] as? JsonObject)?.let { c ->
+                            try {
+                                json.decodeFromJsonElement(CardDto.serializer(), c)
+                            } catch (_: Exception) {
+                                null
+                            }
+                        },
                     )
                 }
                 else -> null // start / text-start / text-end / finish / sources: no app effect

@@ -122,6 +122,7 @@ import android.net.Uri
 import android.widget.Toast
 import com.yasha.assist.core.design.LocalYashaPalette
 import com.yasha.assist.core.markdown.YashaMarkdown
+import com.yasha.assist.core.net.CardDto
 import com.yasha.assist.core.net.ThreadRowDto
 import java.util.Base64
 import kotlin.math.min
@@ -596,6 +597,61 @@ private fun ToolChips(tools: List<UiTool>) {
                 }
             }
             if (expanded && expandable) ToolDetails(tool)
+            // Generative UI (issue #16): structured card under the chip.
+            tool.card?.let { GenerativeCardView(it) }
+        }
+    }
+}
+
+// Display-only generative card (issue #16): all texts come from the tool
+// envelope (server-validated), so there is nothing to localize. Links open
+// in the browser; http(s) was enforced server-side.
+@Composable
+private fun GenerativeCardView(card: CardDto) {
+    val palette = LocalYashaPalette.current
+    val context = LocalContext.current
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 6.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .border(1.dp, palette.composerOutline, RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(card.title, style = MaterialTheme.typography.titleSmall)
+        val body = card.body
+        if (!body.isNullOrEmpty()) {
+            Text(body, style = MaterialTheme.typography.bodySmall, color = palette.disclaimer)
+        }
+        card.fields?.forEach { f ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    f.label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = palette.disclaimer,
+                    modifier = Modifier.weight(0.4f),
+                )
+                Text(f.value, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(0.6f))
+            }
+        }
+        card.links?.forEach { l ->
+            Text(
+                l.label,
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable {
+                        try {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(l.url)))
+                        } catch (_: Exception) {
+                            // No browser for this URL — swallow (QA fallback).
+                        }
+                    }
+                    .padding(vertical = 2.dp),
+            )
         }
     }
 }

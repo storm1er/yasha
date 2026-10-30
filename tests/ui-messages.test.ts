@@ -160,6 +160,29 @@ describe("storedToUiMessages", () => {
     expect(m.parts).toEqual([tool({ server: "k", name: "ok", status: "done", args: undefined, result: undefined, truncated: undefined })]);
   });
 
+  // Issue #16: stored meta.tools entries may carry a validated card; anything
+  // malformed degrades to a plain chip (never a partial shape).
+  it("assistant row: stored card passes through, malformed card is dropped", () => {
+    const valid = { kind: "info", title: "T", fields: [{ label: "l", value: "v" }] };
+    const [m] = storedToUiMessages([
+      {
+        id: "a16",
+        role: "assistant",
+        content: "",
+        meta: {
+          tools: [
+            { server: "k", name: "good", ok: true, card: valid },
+            { server: "k", name: "bad", ok: true, card: { noTitle: 1 } },
+          ],
+        },
+      },
+    ]);
+    expect(m.parts).toEqual([
+      tool({ server: "k", name: "good", status: "done", args: undefined, result: undefined, truncated: undefined, card: valid }),
+      tool({ server: "k", name: "bad", status: "done", args: undefined, result: undefined, truncated: undefined }),
+    ]);
+  });
+
   it("assistant row: mismatched/garbled meta.parts → chips-then-text fallback", () => {
     const cases: unknown[] = [
       undefined, // no parts key at all
