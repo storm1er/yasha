@@ -6,7 +6,7 @@ import androidx.security.crypto.MasterKey
 
 // better-auth session token + server base URL, at rest in EncryptedSharedPreferences
 // (decision D-2, PLAN.md §8). Cleared on sign-out / 401.
-class SessionStore(context: Context) {
+class SessionStore(context: Context) : SessionAccess {
     private val prefs = EncryptedSharedPreferences.create(
         context,
         "yasha_session",
@@ -15,15 +15,15 @@ class SessionStore(context: Context) {
         EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
     )
 
-    var baseUrl: String
+    override var baseUrl: String
         get() = prefs.getString(KEY_BASE_URL, "") ?: ""
         set(value) = prefs.edit().putString(KEY_BASE_URL, value.trimEnd('/')).apply()
 
-    var token: String?
+    override var token: String?
         get() = prefs.getString(KEY_TOKEN, null)
         set(value) = prefs.edit().putString(KEY_TOKEN, value).apply()
 
-    var email: String?
+    override var email: String?
         get() = prefs.getString(KEY_EMAIL, null)
         set(value) = prefs.edit().putString(KEY_EMAIL, value).apply()
 
@@ -33,7 +33,7 @@ class SessionStore(context: Context) {
         get() = prefs.getString(KEY_LOCALE, null)
         set(value) = prefs.edit().putString(KEY_LOCALE, value).apply()
 
-    fun signedIn() = !token.isNullOrEmpty()
+    override fun signedIn() = !token.isNullOrEmpty()
 
     // One-shot injection of the credentials baked into a per-user APK built by
     // the web app (BuildConfig values). Never re-seeds after a manual sign-out.
@@ -47,7 +47,7 @@ class SessionStore(context: Context) {
             .apply()
     }
 
-    fun clearSession() = prefs.edit()
+    override fun clearSession() = prefs.edit()
         .remove(KEY_TOKEN)
         .remove(KEY_EMAIL)
         .remove(KEY_LOCALE)

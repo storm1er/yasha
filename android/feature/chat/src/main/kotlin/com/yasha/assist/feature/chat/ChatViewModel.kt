@@ -12,11 +12,13 @@ import com.yasha.assist.core.net.ChatAttachments
 import com.yasha.assist.core.net.ChatEvent
 import com.yasha.assist.core.net.ChatRequestBody
 import com.yasha.assist.core.net.ModelDto
-import com.yasha.assist.core.net.SessionStore
-import com.yasha.assist.core.net.YashaClient
 import com.yasha.assist.core.net.ApiResult
+import com.yasha.assist.core.net.SessionAccess
+import com.yasha.assist.core.net.SessionProbe
+import com.yasha.assist.core.net.YashaChatApi
 import com.yasha.assist.core.net.ThreadRowDto
 import java.util.Base64
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -58,6 +60,9 @@ data class UiMessage(
 data class ChatUiState(
     val signedIn: Boolean = false,
     val checkingSession: Boolean = false,
+    // Server unreachable while a stored session exists (issue #14): the app
+    // shell stays visible with a banner; never means "signed out".
+    val offline: Boolean = false,
     val baseUrl: String = "",
     val email: String = "",
     val busy: Boolean = false,
@@ -86,15 +91,22 @@ data class ChatUiState(
 }
 
 class ChatViewModel(
-    private val store: SessionStore,
-    private val client: YashaClient,
+    private val store: SessionAccess,
+    private val client: YashaChatApi,
     private val recorderFactory: (onLevel: (rms: Double) -> Unit) -> MicRecorder =
         { level -> AudioRecorder(levelListener = level) },
+    // Reconnect cadence while offline; a fake suspension hook in tests.
+    private val reconnectDelay: suspend () -> Unit = { delay(10_000) },
+    testScope: CoroutineScope? = null,
 ) : ViewModel() {
+    // Settings VM pattern: tests inject an explicit scope so viewModelScope
+    // (Main dispatcher) is never touched on the JVM.
+    private val scope: CoroutineScope = testScope ?: viewModelScope
     private val _state = MutableStateFlow(ChatUiState())
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
     private var streamJob: Job? = null
+    private var reconnectJob: Job? = null
     private var msgSeq = 0
     private fun nextId() = "local-${msgSeq++}"
 
@@ -102,15 +114,58 @@ class ChatViewModel(
         _state.update { it.copy(baseUrl = store.baseUrl, email = store.email.orEmpty()) }
         if (!store.signedIn()) return
         _state.update { it.copy(checkingSession = true) }
-        viewModelScope.launch {
-            if (client.probeSession()) {
-                _state.update { it.copy(checkingSession = false, signedIn = true) }
+        scope.launch { probeAndEnter() }
+    }
+
+    // Issue #14: a transport failure is NOT a sign-out signal. Only the
+    // server-confirmed `Invalid` clears the token (unrecoverable for
+    // credential-seeded APKs when done on airplane mode); `Unreachable`
+    // keeps the session, shows the offline banner and retries in background.
+    private suspend fun probeAndEnter() {
+        when (client.probeSession()) {
+            SessionProbe.Valid -> {
+                _state.update { it.copy(checkingSession = false, signedIn = true, offline = false, error = null) }
                 refresh()
-            } else {
+            }
+            SessionProbe.Invalid -> {
                 store.clearSession()
-                _state.update { it.copy(checkingSession = false, signedIn = false) }
+                _state.update { it.copy(checkingSession = false, signedIn = false, offline = false) }
+            }
+            SessionProbe.Unreachable -> {
+                _state.update { it.copy(checkingSession = false, signedIn = true, offline = true) }
+                scheduleReconnect()
             }
         }
+    }
+
+    // One background probe per reconnectDelay while the offline banner is up;
+    // exits as soon as the server answers (Valid clears `offline`, Invalid
+    // ends the session — both stop the loop).
+    private fun scheduleReconnect() {
+        if (reconnectJob?.isActive == true) return
+        reconnectJob = scope.launch {
+            while (_state.value.offline) {
+                reconnectDelay()
+                if (_state.value.offline) probeAndEnter()
+            }
+        }
+    }
+
+    /** Banner Retry button: re-probe now (also used on resume). */
+    fun retryNow() {
+        if (!store.signedIn()) {
+            start()
+        } else if (_state.value.offline) {
+            reconnectJob?.cancel()
+            scope.launch { probeAndEnter() }
+        } else {
+            refresh()
+        }
+    }
+
+    /** Activity resume: recover immediately when coming back with connectivity. */
+    fun onResume() {
+        if (_state.value.offline) retryNow()
     }
 
     fun signIn(baseUrl: String, email: String, password: String) {
@@ -121,7 +176,7 @@ class ChatViewModel(
         }
         store.baseUrl = url
         _state.update { it.copy(baseUrl = url, busy = true, error = null) }
-        viewModelScope.launch {
+        scope.launch {
             when (val r = client.signIn(email.trim(), password)) {
                 is ApiResult.Err -> _state.update { it.copy(busy = false, error = r.code) }
                 is ApiResult.Ok -> {
@@ -134,7 +189,7 @@ class ChatViewModel(
 
     fun signOut() {
         streamJob?.cancel()
-        viewModelScope.launch {
+        scope.launch {
             client.signOut()
             streamJob = null
             _state.update { ChatUiState(baseUrl = store.baseUrl) }
@@ -144,7 +199,7 @@ class ChatViewModel(
     fun dismissError() = _state.update { it.copy(error = null) }
 
     fun refresh() {
-        viewModelScope.launch {
+        scope.launch {
             when (val r = client.fetchModels()) {
                 is ApiResult.Ok -> _state.update { it.copy(models = r.value.models, defaultModel = r.value.default, noVision = r.value.noVision) }
                 is ApiResult.Err -> _state.update { it.copy(error = r.code) }
@@ -177,11 +232,11 @@ class ChatViewModel(
     private var captionJob: Job? = null
 
     private val vadController = VadRecorderController(
-        scope = viewModelScope,
+        scope = scope,
         recorderFactory = recorderFactory,
         onAudioReady = { wav ->
             val dataUrl = "data:audio/wav;base64," + Base64.getEncoder().encodeToString(wav)
-            viewModelScope.launch {
+            scope.launch {
                 val s = _state.value
                 sendInternal(s.input.trim(), s.attachments, dataUrl)
             }
@@ -190,7 +245,7 @@ class ChatViewModel(
     )
 
     init {
-        viewModelScope.launch {
+        scope.launch {
             vadController.state.collect { sp ->
                 _state.update {
                     it.copy(
@@ -210,7 +265,7 @@ class ChatViewModel(
 
     /** Caption retry (failed caption): re-enqueue the job, poll for the outcome. */
     fun retryTranscribe(messageId: String) {
-        viewModelScope.launch {
+        scope.launch {
             when (val r = client.retryTranscribe(messageId)) {
                 is ApiResult.Err -> _state.update { it.copy(error = r.code) }
                 is ApiResult.Ok -> {
@@ -229,7 +284,7 @@ class ChatViewModel(
      * mirrors the web chat-surface behavior). */
     private fun pollCaptions(threadId: String) {
         if (captionJob?.isActive == true) return
-        captionJob = viewModelScope.launch {
+        captionJob = scope.launch {
             repeat(8) {
                 delay(4000)
                 val r = client.openThread(threadId)
@@ -254,7 +309,7 @@ class ChatViewModel(
     }
 
     fun openThread(id: String) {
-        viewModelScope.launch {
+        scope.launch {
             when (val r = client.openThread(id)) {
                 is ApiResult.Ok -> _state.update { st ->
                     val threadPick = r.value.thread.model?.takeIf { tid -> st.models.any { it.id == tid } }
@@ -305,7 +360,7 @@ class ChatViewModel(
     }
 
     fun deleteThread(id: String) {
-        viewModelScope.launch {
+        scope.launch {
             client.deleteThread(id)
             if (_state.value.threadId == id) showList()
             refresh()
@@ -372,7 +427,7 @@ class ChatViewModel(
         }
         var sawThreadId = s.threadId != null
         var failed = false
-        streamJob = viewModelScope.launch {
+        streamJob = scope.launch {
             client.chatStream(
                 ChatRequestBody(
                     message = text,
@@ -484,7 +539,7 @@ class ChatViewModel(
         cancelListening()
     }
 
-    class Factory(private val store: SessionStore, private val client: YashaClient) : ViewModelProvider.Factory {
+    class Factory(private val store: SessionAccess, private val client: YashaChatApi) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T =
             ChatViewModel(store, client) as T

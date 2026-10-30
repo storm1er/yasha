@@ -86,6 +86,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -140,6 +143,16 @@ fun YashaAppRoot(
     var appliedTick by remember { mutableStateOf(0L) }
     var appliedThreadTick by remember { mutableStateOf(0L) }
     LaunchedEffect(Unit) { vm.start() }
+    // Issue #14: coming back to the app with connectivity must recover the
+    // session view immediately (the offline banner's auto-retry also runs).
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) vm.onResume()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     // The tick may arrive before the session probe flips signedIn (cold start) —
     // latch on the tick and apply exactly once when the session is ready.
     LaunchedEffect(assistTick, state.signedIn) {
@@ -248,7 +261,15 @@ private fun Home(vm: ChatViewModel, state: ChatUiState, onSettings: () -> Unit) 
         Scaffold(
             snackbarHost = { SnackbarHost(snackbar) },
             contentWindowInsets = WindowInsets(0.dp, 0.dp, 0.dp, 0.dp),
-            topBar = { TopBar(vm, state, onMenu = { scope.launch { drawerState.open() } }) },
+            topBar = {
+                Column {
+                    TopBar(vm, state, onMenu = { scope.launch { drawerState.open() } })
+                    // Issue #14: server unreachable with a valid stored token —
+                    // session preserved, banner + background/auto retry instead
+                    // of the login form.
+                    if (state.offline) OfflineBanner(vm)
+                }
+            },
         ) { pad ->
             if (state.threadId == null && state.messages.isEmpty()) {
                 HomeScreen(vm, state, Modifier.padding(pad))
@@ -271,6 +292,25 @@ private fun Home(vm: ChatViewModel, state: ChatUiState, onSettings: () -> Unit) 
                 TextButton(onClick = { pendingDelete = null }) { Text(stringResource(R.string.cancel)) }
             },
         )
+    }
+}
+
+@Composable
+private fun OfflineBanner(vm: ChatViewModel) {
+    Row(
+        Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.errorContainer)
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            stringResource(R.string.error_network),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onErrorContainer,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(onClick = { vm.retryNow() }) {
+            Text(stringResource(R.string.retry), style = MaterialTheme.typography.labelLarge)
+        }
     }
 }
 

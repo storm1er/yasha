@@ -1,0 +1,170 @@
+package com.yasha.assist.feature.chat
+
+import com.yasha.assist.core.audio.MicRecorder
+import com.yasha.assist.core.net.ApiResult
+import com.yasha.assist.core.net.AudioConfigDto
+import com.yasha.assist.core.net.ChatEvent
+import com.yasha.assist.core.net.ChatRequestBody
+import com.yasha.assist.core.net.ModelsDto
+import com.yasha.assist.core.net.SessionAccess
+import com.yasha.assist.core.net.SessionProbe
+import com.yasha.assist.core.net.ThreadDetailDto
+import com.yasha.assist.core.net.ThreadRowDto
+import com.yasha.assist.core.net.YashaChatApi
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+// Issue #14 regression suite: the startup session probe must clear the stored
+// token ONLY when the server confirmed the sign-out — a transport failure
+// (airplane mode) keeps the session and drives the offline banner instead.
+// Same fake-driven pattern as the SettingsViewModel tests (no Robolectric).
+
+private val UnusedRecorder = object : MicRecorder {
+    override fun start(): Boolean = false
+    override fun stopWav(): ByteArray? = null
+    override fun cancel() {}
+}
+
+private class FakeStore : SessionAccess {
+    override var baseUrl: String = "https://yasha.test"
+    override var token: String? = "seeded-token"
+    override var email: String? = "user@yasha.test"
+    var clearCount = 0
+    override fun signedIn() = !token.isNullOrEmpty()
+    override fun clearSession() { clearCount++; token = null }
+}
+
+private class FakeChatApi(probes: List<SessionProbe>) : YashaChatApi {
+    private val queue = probes.toMutableList()
+    var probeCount = 0
+    var refreshCount = 0
+    override suspend fun probeSession(): SessionProbe {
+        probeCount++
+        return queue.removeAt(0)
+    }
+    override suspend fun signIn(identifier: String, password: String): ApiResult<Unit> = ApiResult.Ok(Unit)
+    override suspend fun signOut() {}
+    override suspend fun fetchModels(): ApiResult<ModelsDto> { refreshCount++; return ApiResult.Ok(ModelsDto(emptyList())) }
+    override suspend fun listThreads(): ApiResult<List<ThreadRowDto>> = ApiResult.Ok(emptyList())
+    override suspend fun openThread(id: String): ApiResult<ThreadDetailDto> = ApiResult.Err("not_faked")
+    override suspend fun deleteThread(id: String): ApiResult<Unit> = ApiResult.Ok(Unit)
+    override suspend fun audioConfig(): ApiResult<AudioConfigDto> = ApiResult.Err("not_faked")
+    override suspend fun retryTranscribe(messageId: String): ApiResult<Boolean> = ApiResult.Err("not_faked")
+    override fun chatStream(body: ChatRequestBody): Flow<ChatEvent> = emptyFlow()
+}
+
+class ChatViewModelSessionTest {
+    private val scope = CoroutineScope(Dispatchers.Unconfined + SupervisorJob())
+    // The reconnect "timer": each send() lets the background loop run one probe.
+    private val tick = kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+
+    @After
+    fun tearDown() { scope.cancel() }
+
+    private fun newVm(store: FakeStore, api: FakeChatApi) = ChatViewModel(
+        store,
+        api,
+        recorderFactory = { UnusedRecorder },
+        reconnectDelay = { tick.receive() },
+        testScope = scope,
+    )
+
+    @Test
+    fun `network failure keeps the stored session and shows the offline banner`() {
+        val store = FakeStore()
+        val api = FakeChatApi(listOf(SessionProbe.Unreachable, SessionProbe.Unreachable))
+        val vm = newVm(store, api)
+        vm.start()
+        // The regression: a transport failure must NEVER destroy the token
+        // (unrecoverable for credential-seeded APKs, which never re-seed).
+        assertEquals(0, store.clearCount)
+        assertEquals("seeded-token", store.token)
+        assertTrue(vm.state.value.signedIn)
+        assertTrue(vm.state.value.offline)
+        assertFalse(vm.state.value.checkingSession)
+    }
+
+    @Test
+    fun `server-confirmed invalid session clears the token and signs out`() {
+        val store = FakeStore()
+        val api = FakeChatApi(listOf(SessionProbe.Invalid))
+        val vm = newVm(store, api)
+        vm.start()
+        assertEquals(1, store.clearCount)
+        assertFalse(vm.state.value.signedIn)
+        assertFalse(vm.state.value.offline)
+    }
+
+    @Test
+    fun `valid session enters the app and refreshes`() {
+        val store = FakeStore()
+        val api = FakeChatApi(listOf(SessionProbe.Valid))
+        val vm = newVm(store, api)
+        vm.start()
+        assertTrue(vm.state.value.signedIn)
+        assertFalse(vm.state.value.offline)
+        assertEquals(0, store.clearCount)
+        assertEquals(1, api.refreshCount)
+    }
+
+    @Test
+    fun `offline auto-recovers on the next background probe without clearing the token`() {
+        val store = FakeStore()
+        val api = FakeChatApi(listOf(SessionProbe.Unreachable, SessionProbe.Valid))
+        val vm = newVm(store, api)
+        vm.start()
+        assertTrue(vm.state.value.offline)
+        tick.trySend(Unit)
+        assertFalse(vm.state.value.offline)
+        assertTrue(vm.state.value.signedIn)
+        assertEquals(0, store.clearCount)
+        assertEquals(1, api.refreshCount)
+    }
+
+    @Test
+    fun `retryNow re-probes immediately while offline and stops the loop`() {
+        val store = FakeStore()
+        val api = FakeChatApi(listOf(SessionProbe.Unreachable, SessionProbe.Valid))
+        val vm = newVm(store, api)
+        vm.start()
+        assertTrue(vm.state.value.offline)
+        vm.retryNow()
+        assertEquals(2, api.probeCount)
+        assertFalse(vm.state.value.offline)
+        // Any pending delayed probe was cancelled: no third probe can fire.
+        tick.trySend(Unit)
+        assertEquals(2, api.probeCount)
+    }
+
+    @Test
+    fun `resume while offline re-probes immediately`() {
+        val store = FakeStore()
+        val api = FakeChatApi(listOf(SessionProbe.Unreachable, SessionProbe.Valid))
+        val vm = newVm(store, api)
+        vm.start()
+        assertTrue(vm.state.value.offline)
+        vm.onResume()
+        assertFalse(vm.state.value.offline)
+        assertEquals(0, store.clearCount)
+    }
+
+    @Test
+    fun `no stored token shows the login screen without probing`() {
+        val store = FakeStore().apply { token = null }
+        val api = FakeChatApi(emptyList())
+        val vm = newVm(store, api)
+        vm.start()
+        assertEquals(0, api.probeCount)
+        assertFalse(vm.state.value.signedIn)
+        assertFalse(vm.state.value.offline)
+    }
+}

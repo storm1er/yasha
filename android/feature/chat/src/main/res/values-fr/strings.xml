@@ -78,6 +78,7 @@
     <string name="mutations_off">Les mutations sont désactivées sur ce serveur</string>
     <string name="key_limit_error">Vous avez déjà 20 clés actives. Révoquez-en une d\'abord.</string>
     <string name="refresh">Actualiser</string>
+    <string name="retry">Réessayer</string>
     <string name="loading">Chargement…</string>
     <string name="no_results">Aucun résultat.</string>
     <string name="api_card_title">API</string>

@@ -78,6 +78,7 @@
     <string name="mutations_off">Mutations are disabled on this server</string>
     <string name="key_limit_error">You already have 20 active keys. Revoke one first.</string>
     <string name="refresh">Refresh</string>
+    <string name="retry">Retry</string>
     <string name="loading">Loading…</string>
     <string name="no_results">No results.</string>
     <string name="api_card_title">API</string>
