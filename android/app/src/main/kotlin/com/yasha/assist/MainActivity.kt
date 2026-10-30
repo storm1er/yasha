@@ -11,6 +11,7 @@ import com.yasha.assist.core.design.YashaTheme
 import com.yasha.assist.core.net.AppLocale
 import com.yasha.assist.feature.chat.ChatViewModel
 import com.yasha.assist.feature.chat.SettingsViewModel
+import com.yasha.assist.feature.chat.ThemePrefs
 import com.yasha.assist.feature.chat.YashaAppRoot
 
 class MainActivity : ComponentActivity() {
@@ -28,8 +29,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Gemini-like chrome: content draws edge-to-edge, bar icons follow the theme.
-        val dark = resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK ==
-            android.content.res.Configuration.UI_MODE_NIGHT_YES
+        val dark = ThemePrefs.darkOverride()
+            ?: (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK ==
+                android.content.res.Configuration.UI_MODE_NIGHT_YES)
         androidx.core.view.WindowInsetsControllerCompat(window, window.decorView).apply {
             isAppearanceLightStatusBars = !dark
             isAppearanceLightNavigationBars = !dark
@@ -37,14 +39,17 @@ class MainActivity : ComponentActivity() {
         consumeAssistExtra(intent)
         val app = application as YashaApp
         setContent {
-            YashaTheme {
+            YashaTheme(darkOverride = ThemePrefs.darkOverride()) {
                 val vm: ChatViewModel = viewModel(
                     factory = ChatViewModel.Factory(app.sessionStore, app.client),
                 )
                 val svm: SettingsViewModel = viewModel(
-                    factory = SettingsViewModel.Factory(app.client) { accountTag ->
-                        applyAccountLocale(app, accountTag)
-                    },
+                    factory = SettingsViewModel.Factory(
+                        app.client,
+                        { accountTag -> applyAccountLocale(app, accountTag) },
+                        themeSource = { ThemePrefs.mode },
+                        themeSink = { ThemePrefs.set(app, it) },
+                    ),
                 )
                 YashaAppRoot(
                     vm,

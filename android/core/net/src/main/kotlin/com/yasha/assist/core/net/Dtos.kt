@@ -136,6 +136,8 @@ data class McpServerDto(
 data class McpAdminDto(
     val mcpEnabled: Boolean = false,
     val userPrivateUrls: Boolean = false,
+    // Admin guardrail for user-owned MCP servers (mcp.userServersEnabled).
+    val userServersEnabled: Boolean = false,
     val servers: List<McpServerDto> = emptyList(),
 )
 

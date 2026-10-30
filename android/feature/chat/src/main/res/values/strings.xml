@@ -289,4 +289,22 @@
 <string name="caption_pending">Transcribing…</string>
 <string name="caption_failed">Transcription failed.</string>
 <string name="caption_retry">Retry</string>
+    <string name="appearance_title">Appearance</string>
+    <string name="appearance_intro">Theme for this device only — never stored on the account.</string>
+    <string name="theme_system">System</string>
+    <string name="theme_light">Light</string>
+    <string name="theme_dark">Dark</string>
+    <string name="sessions_title">Active sessions</string>
+    <string name="sessions_intro">Devices signed in to your account. Revoke anything you don\'t recognize.</string>
+    <string name="sessions_current">current</string>
+    <string name="sessions_revoke">Revoke</string>
+    <string name="sessions_revoke_others">Sign out other devices</string>
+    <string name="sessions_empty">No active sessions to review.</string>
+    <string name="sessions_unknown_device">Unknown device</string>
+    <string name="admin_mcp_user_servers">Allow users to add personal MCP servers</string>
+    <string name="chat_tool_result_max">Tool result max (chars)</string>
+    <string name="tune_dream_deadline">Dream deadline (s)</string>
+    <string name="tune_dream_chunk">Dream chunk size</string>
+    <string name="tune_dream_insights">Insights per night</string>
+    <string name="tune_dream_rebuild">Profile rebuild every (nights)</string>
 </resources>

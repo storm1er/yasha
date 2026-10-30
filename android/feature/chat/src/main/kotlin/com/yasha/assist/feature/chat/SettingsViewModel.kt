@@ -50,6 +50,9 @@ private const val MEMORY_PAGE_SIZE = 50
 
 data class ApiKeyRow(val id: String, val name: String, val masked: String, val createdAt: String, val revoked: Boolean)
 
+// GET /api/me/sessions row (issue #15 parity with the web SessionsCard).
+data class SessionRow(val id: String, val current: Boolean, val userAgent: String, val ipAddress: String, val lastUsedAt: String)
+
 data class UserRow(val id: String, val username: String, val email: String, val role: String)
 
 data class MemoryRow(
@@ -159,6 +162,17 @@ data class SettingsUiState(
     val runClaimSec: String = "",
     val runStaleSec: String = "",
     val runRetentionDays: String = "",
+    // Own auth sessions (issue #15 parity with the web Security tab SessionsCard).
+    val sessions: List<SessionRow> = emptyList(),
+    // Per-device theme (issue #15 parity with the web theme toggle).
+    val themeMode: String = ThemePrefs.SYSTEM,
+    // Admin parity: fields the web cards expose but the Android cards lacked.
+    val adminMcpUserServersEnabled: Boolean = false,
+    val mcpToolResultChars: String = "",
+    val dreamDeadlineSec: String = "",
+    val dreamChunk: String = "",
+    val dreamInsights: String = "",
+    val dreamCardRebuild: String = "",
 )
 
 // `scope` is injectable for unit tests (defaults to viewModelScope in prod).
@@ -169,6 +183,10 @@ class SettingsViewModel(
     // Observes account-locale changes (from /api/me or the picker) so the app
     // can apply the override + recreate; wired in MainActivity, unit-testable.
     private val localeSink: (String?) -> Unit = {},
+    // Per-device theme (issue #15): source seeds the picker, sink persists the
+    // choice (ThemePrefs) — injected so the VM stays JVM-unit-testable.
+    private val themeSource: () -> String = { ThemePrefs.SYSTEM },
+    private val themeSink: (String) -> Unit = {},
 ) : ViewModel() {
     private val scope: CoroutineScope = scopeOverride ?: viewModelScope
     private val json = Json { ignoreUnknownKeys = true }
@@ -194,11 +212,13 @@ class SettingsViewModel(
             }
             loadGeneral()
             loadSelf()
+            _state.update { it.copy(themeMode = themeSource()) }
             if (isAdminNow()) {
                 loadTasksFromValues()
                 loadUsers()
             }
             loadMemories()
+            loadSessions()
             loadMcpPrefs()
             loadUserMcp()
             if (isAdminNow()) loadAdminMcp()
@@ -211,7 +231,7 @@ class SettingsViewModel(
         viewModelScope.launch {
             when (tab) {
                 "general" -> { loadMcpPrefs(); loadUserMcp() }
-                "security" -> { refreshValues(); loadGeneral(); loadSelf(); if (isAdminNow()) loadUsers() }
+                "security" -> { refreshValues(); loadGeneral(); loadSelf(); loadSessions(); if (isAdminNow()) loadUsers() }
                 "memory" -> { refreshValues(); loadMemories(); if (isAdminNow()) loadTasksFromValues() }
                 "backend" -> { loadLemonade(); if (isAdminNow()) loadAdminMcp() }
                 "jobs" -> { refreshValues(); loadRuntime(); loadJobs() }
@@ -273,6 +293,51 @@ class SettingsViewModel(
             client.deleteJson("/api/api-keys/$id")
             loadGeneral()
         }
+    }
+
+    // ── Own sessions (issue #15 parity with the web Security tab) ────────────
+    fun loadSessions() {
+        scope.launch {
+            val r = client.getJson("/api/me/sessions")
+            if (r !is ApiResult.Ok) return@launch
+            val rows = jsonObj(r.value)?.get("sessions")?.asArr()?.mapNotNull {
+                val o = it.asObj() ?: return@mapNotNull null
+                SessionRow(
+                    id = o["id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null,
+                    current = o["current"]?.jsonPrimitive?.booleanOrNull == true,
+                    userAgent = o["userAgent"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                    ipAddress = o["ipAddress"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                    lastUsedAt = o["lastUsedAt"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                )
+            }.orEmpty()
+            _state.update { it.copy(sessions = rows) }
+        }
+    }
+
+    fun revokeSession(id: String) {
+        scope.launch {
+            val r = client.postJson(
+                "/api/me/sessions",
+                buildJsonObject { put("action", "revoke"); put("sessionId", id) }.toString(),
+            )
+            notice(if (r is ApiResult.Ok) "saved" else "err")
+            loadSessions()
+        }
+    }
+
+    fun revokeOtherSessions() {
+        scope.launch {
+            val r = client.postJson("/api/me/sessions", buildJsonObject { put("action", "revokeOthers") }.toString())
+            notice(if (r is ApiResult.Ok) "saved" else "err")
+            loadSessions()
+        }
+    }
+
+    // ── Appearance (per-device, issue #15 parity with the web theme toggle) ──
+    fun setThemeMode(mode: String) {
+        if (mode != ThemePrefs.SYSTEM && mode != ThemePrefs.LIGHT && mode != ThemePrefs.DARK) return
+        themeSink(mode)
+        _state.update { it.copy(themeMode = mode) }
     }
 
     fun setApiField(key: String, value: String) = _state.update {
@@ -475,6 +540,10 @@ class SettingsViewModel(
                     tuneTopK = values["memory.recall.topK"]?.jsonPrimitive?.intOrNull?.toString() ?: "",
                     tuneMsgTrunc = values["memory.transcript.msgTruncChars"]?.jsonPrimitive?.intOrNull?.toString() ?: "",
                     tuneTranscriptCap = values["memory.transcript.capChars"]?.jsonPrimitive?.intOrNull?.toString() ?: "",
+                    dreamDeadlineSec = values["memory.dream.softDeadlineMs"]?.jsonPrimitive?.longOrNull?.let { (it / 1000).toString() } ?: "",
+                    dreamChunk = values["memory.dream.chunkSize"]?.jsonPrimitive?.intOrNull?.toString() ?: "",
+                    dreamInsights = values["memory.dream.insightsPerNight"]?.jsonPrimitive?.intOrNull?.toString() ?: "",
+                    dreamCardRebuild = values["memory.dream.cardRebuildEvery"]?.jsonPrimitive?.intOrNull?.toString() ?: "",
                 )
             }
         }
@@ -662,6 +731,7 @@ class SettingsViewModel(
                 it.copy(
                     adminMcpEnabled = dto.mcpEnabled,
                     adminMcpUserPrivateUrls = dto.userPrivateUrls,
+                    adminMcpUserServersEnabled = dto.userServersEnabled,
                     mcpServers = dto.servers,
                     mcpLoaded = true,
                 )
@@ -680,6 +750,13 @@ class SettingsViewModel(
         scope.launch {
             client.postJson("/api/admin/settings", buildJsonObject { put("mcp.userPrivateUrls", next) }.toString())
             _state.update { it.copy(adminMcpUserPrivateUrls = next) }
+        }
+    }
+
+    fun setMcpUserServersEnabled(next: Boolean) {
+        scope.launch {
+            client.postJson("/api/admin/settings", buildJsonObject { put("mcp.userServersEnabled", next) }.toString())
+            _state.update { it.copy(adminMcpUserServersEnabled = next) }
         }
     }
 
@@ -722,7 +799,11 @@ class SettingsViewModel(
             "budget" -> it.copy(tuneBudget = v)
             "topk" -> it.copy(tuneTopK = v)
             "trunc" -> it.copy(tuneMsgTrunc = v)
-            else -> it.copy(tuneTranscriptCap = v)
+            "cap" -> it.copy(tuneTranscriptCap = v)
+            "dreamdeadline" -> it.copy(dreamDeadlineSec = v)
+            "dreamchunk" -> it.copy(dreamChunk = v)
+            "dreaminsights" -> it.copy(dreamInsights = v)
+            else -> it.copy(dreamCardRebuild = v)
         }
     }
 
@@ -732,6 +813,10 @@ class SettingsViewModel(
             _state.value.tuneTopK.toIntOrNull()?.let { if (it > 0) put("memory.recall.topK", it) }
             _state.value.tuneMsgTrunc.toIntOrNull()?.let { if (it > 0) put("memory.transcript.msgTruncChars", it) }
             _state.value.tuneTranscriptCap.toIntOrNull()?.let { if (it > 0) put("memory.transcript.capChars", it) }
+            _state.value.dreamDeadlineSec.toLongOrNull()?.let { if (it > 0) put("memory.dream.softDeadlineMs", it * 1000) }
+            _state.value.dreamChunk.toIntOrNull()?.let { if (it > 0) put("memory.dream.chunkSize", it) }
+            _state.value.dreamInsights.toIntOrNull()?.let { if (it > 0) put("memory.dream.insightsPerNight", it) }
+            _state.value.dreamCardRebuild.toIntOrNull()?.let { if (it > 0) put("memory.dream.cardRebuildEvery", it) }
         },
     )
 
@@ -770,6 +855,7 @@ class SettingsViewModel(
                     chatMaxImages = values["chat.maxImagesPerMessage"]?.jsonPrimitive?.intOrNull?.toString() ?: "",
                     chatMaxWindowImages = values["chat.maxWindowImages"]?.jsonPrimitive?.intOrNull?.toString() ?: "",
                     chatMaxUploadMb = values["chat.maxUploadBytes"]?.jsonPrimitive?.longOrNull?.let { v -> (v / 1048576).toString() } ?: "",
+                    mcpToolResultChars = values["mcp.toolResultMaxChars"]?.jsonPrimitive?.intOrNull?.toString() ?: "",
                 )
             }
         }
@@ -793,6 +879,7 @@ class SettingsViewModel(
             "chattimeout" -> it.copy(chatTimeoutSec = v)
             "maximg" -> it.copy(chatMaxImages = v)
             "maxwin" -> it.copy(chatMaxWindowImages = v)
+            "toolres" -> it.copy(mcpToolResultChars = v)
             else -> it.copy(chatMaxUploadMb = v)
         }
     }
@@ -811,6 +898,8 @@ class SettingsViewModel(
             _state.value.chatMaxImages.toIntOrNull()?.let { if (it > 0) put("chat.maxImagesPerMessage", it) }
             _state.value.chatMaxWindowImages.toIntOrNull()?.let { if (it > 0) put("chat.maxWindowImages", it) }
             _state.value.chatMaxUploadMb.toLongOrNull()?.let { if (it > 0) put("chat.maxUploadBytes", it * 1048576) }
+            // Same bounds the web card enforces for mcp.toolResultMaxChars.
+            _state.value.mcpToolResultChars.toIntOrNull()?.let { if (it in 500..100_000) put("mcp.toolResultMaxChars", it) }
         },
     )
 
@@ -956,9 +1045,11 @@ class SettingsViewModel(
     class Factory(
         private val client: YashaApi,
         private val localeSink: (String?) -> Unit = {},
+        private val themeSource: () -> String = { ThemePrefs.SYSTEM },
+        private val themeSink: (String) -> Unit = {},
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T =
-            SettingsViewModel(client, localeSink = localeSink) as T
+            SettingsViewModel(client, localeSink = localeSink, themeSource = themeSource, themeSink = themeSink) as T
     }
 }

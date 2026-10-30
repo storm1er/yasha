@@ -4,6 +4,7 @@ import android.app.Application
 import com.yasha.assist.core.net.AppLocale
 import com.yasha.assist.core.net.SessionStore
 import com.yasha.assist.core.net.YashaClient
+import com.yasha.assist.feature.chat.ThemePrefs
 
 class YashaApp : Application() {
     lateinit var sessionStore: SessionStore
@@ -15,6 +16,7 @@ class YashaApp : Application() {
         super.onCreate()
         sessionStore = SessionStore(this)
         AppLocale.tag = AppLocale.resolve(sessionStore.locale)
+        ThemePrefs.load(this)
         // Pre-authenticated install: the web app bakes server + session into
         // this build (empty in the generic debug build → no-op).
         sessionStore.seed(

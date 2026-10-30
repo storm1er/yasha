@@ -390,6 +390,19 @@ private fun GeneralTab(vm: SettingsViewModel, state: SettingsUiState) {
             }
         }
     }
+    // Appearance (issue #15 parity with the web theme toggle): per-device.
+    SectionCard(stringResource(R.string.appearance_title), stringResource(R.string.appearance_intro)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            listOf(
+                ThemePrefs.SYSTEM to stringResource(R.string.theme_system),
+                ThemePrefs.LIGHT to stringResource(R.string.theme_light),
+                ThemePrefs.DARK to stringResource(R.string.theme_dark),
+            ).forEach { (id, label) ->
+                if (state.themeMode == id) PillButton(label) { }
+                else OutlinedButton(onClick = { vm.setThemeMode(id) }) { Text(label) }
+            }
+        }
+    }
     // Admin kill-switch off ⇒ the whole preference is meaningless: hide the card.
     if (state.mcpInstanceEnabled != false) {
         SectionCard(stringResource(R.string.tools_title), stringResource(R.string.tools_intro)) {
@@ -735,6 +748,46 @@ private fun SecurityTab(vm: SettingsViewModel, state: SettingsUiState) {
         }
     }
 
+    // Own active sessions (issue #15 parity with the web SessionsCard): revoke
+    // other devices; the current one is marked and cannot be revoked.
+    SectionCard(stringResource(R.string.sessions_title), stringResource(R.string.sessions_intro)) {
+        if (state.sessions.isEmpty()) {
+            Text(stringResource(R.string.sessions_empty), style = MaterialTheme.typography.bodyMedium, color = palette.iconGray)
+        } else {
+            state.sessions.forEach { s ->
+                Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(
+                                s.userAgent.ifEmpty { stringResource(R.string.sessions_unknown_device) },
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            if (s.current) SmallBadge(stringResource(R.string.sessions_current), filled = true)
+                        }
+                        Text(
+                            listOf(
+                                s.ipAddress.takeIf { it.isNotEmpty() },
+                                s.lastUsedAt.take(16).replace('T', ' '),
+                            ).filterNotNull().joinToString(" · "),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = palette.iconGray,
+                        )
+                    }
+                    if (!s.current) {
+                        TextButton(onClick = { vm.revokeSession(s.id) }) {
+                            Text(stringResource(R.string.sessions_revoke), color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+                        }
+                    }
+                }
+            }
+        }
+        if (state.sessions.count { !it.current } > 0) {
+            PillButton(stringResource(R.string.sessions_revoke_others)) { vm.revokeOtherSessions() }
+        }
+    }
+
     editTarget?.let { u ->
         AlertDialog(
             onDismissRequest = { editTarget = null },
@@ -987,6 +1040,15 @@ private fun MemoryTab(vm: SettingsViewModel, state: SettingsUiState) {
             NumField(stringResource(R.string.tune_topk), state.tuneTopK) { vm.setTuneField("topk", it) }
             NumField(stringResource(R.string.tune_trunc), state.tuneMsgTrunc) { vm.setTuneField("trunc", it) }
             NumField(stringResource(R.string.tune_cap), state.tuneTranscriptCap) { vm.setTuneField("cap", it) }
+            // Dream tuning (issue #15 parity with the web memory admin card).
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                Column(Modifier.weight(1f)) { NumField(stringResource(R.string.tune_dream_deadline), state.dreamDeadlineSec) { vm.setTuneField("dreamdeadline", it) } }
+                Column(Modifier.weight(1f)) { NumField(stringResource(R.string.tune_dream_chunk), state.dreamChunk) { vm.setTuneField("dreamchunk", it) } }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                Column(Modifier.weight(1f)) { NumField(stringResource(R.string.tune_dream_insights), state.dreamInsights) { vm.setTuneField("dreaminsights", it) } }
+                Column(Modifier.weight(1f)) { NumField(stringResource(R.string.tune_dream_rebuild), state.dreamCardRebuild) { vm.setTuneField("dreamrebuild", it) } }
+            }
             PillButton(stringResource(R.string.save)) { vm.saveTuning() }
         }
         SectionCard(stringResource(R.string.task_fact_title), stringResource(R.string.task_fact_intro)) {
@@ -1050,6 +1112,7 @@ private fun LemonadeTab(vm: SettingsViewModel, state: SettingsUiState) {
             Column(Modifier.weight(1f)) { NumField(stringResource(R.string.chat_max_window_images), state.chatMaxWindowImages) { vm.setLemonadeField("maxwin", it) } }
         }
         NumField(stringResource(R.string.chat_max_upload), state.chatMaxUploadMb) { vm.setLemonadeField("maxupload", it) }
+        NumField(stringResource(R.string.chat_tool_result_max), state.mcpToolResultChars) { vm.setLemonadeField("toolres", it) }
         PillButton(stringResource(R.string.save)) { vm.saveChatLimits() }
     }
 
@@ -1131,6 +1194,11 @@ private fun LemonadeTab(vm: SettingsViewModel, state: SettingsUiState) {
             stringResource(R.string.admin_mcp_user_private),
             checked = state.adminMcpUserPrivateUrls,
             onChecked = { vm.setMcpUserPrivateUrls(it) },
+        )
+        SwitchRow(
+            stringResource(R.string.admin_mcp_user_servers),
+            checked = state.adminMcpUserServersEnabled,
+            onChecked = { vm.setMcpUserServersEnabled(it) },
         )
         if (state.mcpLoaded && state.mcpServers.isEmpty()) {
             Text(stringResource(R.string.admin_mcp_none), style = MaterialTheme.typography.bodyMedium, color = palette.iconGray)
