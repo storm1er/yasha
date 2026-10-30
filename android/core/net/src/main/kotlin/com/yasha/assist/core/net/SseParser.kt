@@ -2,6 +2,8 @@ package com.yasha.assist.core.net
 
 // Minimal SSE frame accumulator matching the server's `data: {json}\n\n` framing
 // (app/api/chat/route.ts). Feed raw chunk text, get whole payloads out.
+// Comment lines (`: stream-open`, `: keep-alive`) are dropped; the terminal
+// `[DONE]` sentinel passes through and is mapped by ChatEvents.
 class SseParser {
     private var buffer = StringBuilder()
 
@@ -18,7 +20,7 @@ class SseParser {
                 .map { it.trimEnd('\r') }
                 .filter { it.startsWith("data:") }
                 .map { it.removePrefix("data:").removePrefix(" ").trim() }
-                .filter { it.isNotEmpty() && it != "[DONE]" }
+                .filter { it.isNotEmpty() }
                 .forEach { payloads.add(it) }
         }
         return payloads

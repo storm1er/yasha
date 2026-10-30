@@ -4,7 +4,9 @@
 // lib/lemonade-admin.ts; base URL/key now come from the provider row.
 
 import { ChatModelCache } from "./model-cache";
+import { AiModelFactory } from "./language-model";
 import { MutationsDisabledError, type ChatModel, type ChatProvider, type ControlPlane } from "./types";
+import type { LanguageModelV4 } from "@ai-sdk/provider";
 
 /** True only when ADMIN_ALLOW_BACKEND_MUTATIONS is the exact string "true". */
 export function backendMutationsEnabled(): boolean {
@@ -91,6 +93,14 @@ export class LemonadeProvider implements ChatProvider, ControlPlane {
       body: JSON.stringify(body),
       signal,
     });
+  }
+
+  private aiModels: AiModelFactory | null = null;
+
+  /** AI SDK model over the keyless data plane (M1); memoized per upstream id. */
+  languageModel(upstreamModelId: string): LanguageModelV4 {
+    this.aiModels ??= new AiModelFactory(this.id, this.baseUrl, null);
+    return this.aiModels.model(upstreamModelId);
   }
 
   /**

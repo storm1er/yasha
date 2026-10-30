@@ -9,7 +9,7 @@ import { db, setSetting } from "./support/db";
 import { settings } from "@/lib/db/schema";
 import { invalidateSettingsCache } from "@/lib/settings";
 import { adminUser, type AdminUser } from "./support/app";
-import { mockLemonade, sseCompletion, type LemonadeMock } from "./support/lemonade";
+import { mockLemonade, sseChatCompletion, type LemonadeMock } from "./support/lemonade";
 import { jobCheckpoints, memories, messages, threads, userSettings } from "@/lib/db/schema";
 import { handleDreaming } from "@/lib/memory/dream";
 import { TOOL_OUTPUT_PLACEHOLDER } from "@/lib/memory/transcript";
@@ -55,7 +55,7 @@ function mockCompletions(...texts: (string | Error | Response)[]): LemonadeMock 
     i += 1;
     if (t instanceof Error) throw t;
     if (t instanceof Response) return t;
-    return sseCompletion(t);
+    return sseChatCompletion(t);
   });
   return mock;
 }
@@ -279,9 +279,11 @@ describe("dreaming: insight extraction", () => {
         h.ac.abort();
         throw new Error("insight-abort");
       }
-      return sseCompletion(i === 1 ? "[]" : "[]");
+      return sseChatCompletion(i === 1 ? "[]" : "[]");
     });
-    await expect(handleDreaming(h.ctx)).rejects.toThrow("insight-abort");
+    // M3: the abort kills the in-flight call as an abort (custom transport
+    // message replaced by the signal reason) — the night still REJECTS.
+    await expect(handleDreaming(h.ctx)).rejects.toThrow(/abort/i);
     // consolidation chunk already committed its rotation cursor
     expect(dreamCursor()).toBe(0);
   });
@@ -445,10 +447,10 @@ describe("dreaming: defensive branches", () => {
     let i = 0;
     mock.route(COMPLETIONS, () => {
       i += 1;
-      if (i === 1) return sseCompletion("[]");
-      if (i === 2) return sseCompletion('["t"]');
+      if (i === 1) return sseChatCompletion("[]");
+      if (i === 2) return sseChatCompletion('["t"]');
       if (i === 3) throw { code: 9 };
-      return sseCompletion('["identity: ok"]');
+      return sseChatCompletion('["identity: ok"]');
     });
     const res = await handleDreaming(ctx().ctx);
     expect(res).toMatchObject({ insightsCreated: 0, insightError: "[object Object]", cardUpdated: true });

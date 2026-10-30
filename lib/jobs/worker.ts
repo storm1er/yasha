@@ -4,6 +4,7 @@
 
 import { and, asc, eq, lt, lte, sql } from "drizzle-orm";
 import { CronExpressionParser } from "cron-parser";
+import { APICallError, streamText } from "ai";
 import { db } from "@/lib/db";
 import { jobCheckpoints, jobs, messages, threads, user, type Job } from "@/lib/db/schema";
 import { dedupeKeyFor, patchJob } from "./queue";
@@ -16,7 +17,7 @@ import {
   type EventConfig,
   type QueueJobType,
 } from "@/lib/settings";
-import { forEachSseData } from "@/lib/provider/http";
+import { toModelMessages } from "@/lib/chat/model-messages";
 import { routeModel } from "@/lib/provider/catalog";
 import { handleTitleGeneration } from "./handlers";
 import { handleGeminiImport, sweepGeminiSpools } from "./gemini-import";
@@ -447,20 +448,35 @@ function finishFailed(job: Job, cfg: EventConfig, started: number, error: string
   });
 }
 
-function errMessage(err: unknown): string {
+/** Canonical error→message text for job bookkeeping and handler catch
+ *  blocks (completeOnce already normalizes transport throws to Error, but
+ *  handler-local failures can carry anything). */
+export function errMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
 }
 
-// Internal jobs share one upstream call shape. Streaming + reading only
-// delta.content: some upstream aliases (openrouter rotators) 500 on
-// non-streaming calls, and reasoning* fields are dropped per AGENTS hard rule
-// #1. Budgets must cover the hidden reasoning a thinking alias spends BEFORE it
-// answers — max_tokens bills both, so a small budget yields an EMPTY content
-// (finish_reason=length) and the handler would lose the row's output. Hence the
-// floor below plus one wide retry when a first attempt comes back empty.
+// Internal jobs share one upstream call shape. Streaming is forced (some
+// upstream aliases — openrouter rotators — 500 on non-streaming calls), and
+// only text deltas are read: reasoning* fields are dropped per AGENTS hard
+// rule #1. Budgets must cover the hidden reasoning a thinking alias spends
+// BEFORE it answers — max_tokens bills both, so a small budget yields an EMPTY
+// content (finish_reason=length) and the handler would lose the row's output.
+// Hence the floor below plus one wide retry when a first attempt comes back
+// empty. M3: the raw fetch/SSE loop became AI SDK streamText (migration plan);
+// wire shape is identical (stream + max_tokens [+ temperature]).
 const MIN_COMPLETION_TOKENS = 2048;
 const EMPTY_RETRY_TOKENS = 8192;
+
+function toUpstreamError(error: unknown): Error {
+  if (error instanceof APICallError && typeof error.statusCode === "number")
+    return new Error(`upstream_status_${error.statusCode}`);
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function toAbortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error("aborted");
+}
 
 async function completeAttempt(
   opts: CompleteOnceOpts,
@@ -469,29 +485,28 @@ async function completeAttempt(
 ): Promise<string> {
   const route = await routeModel(opts.model);
   if (!route) throw new Error("no_backend");
-  const res = await route.provider.completion(
-    {
-      model: route.model,
-      messages: opts.messages,
-      stream: true,
-      max_tokens: maxTokens,
-      ...(temperature !== undefined ? { temperature } : {}),
-    },
-    opts.signal,
-  );
-  if (!res.ok || !res.body) throw new Error(`upstream_status_${res.status}`);
-  let text = "";
-  await forEachSseData(res.body, (payload) => {
-    if (!payload || payload === "[DONE]") return;
-    let chunk: { choices?: { delta?: { content?: unknown } }[] };
-    try {
-      chunk = JSON.parse(payload);
-    } catch {
-      return;
-    }
-    const delta = chunk.choices?.[0]?.delta;
-    if (typeof delta?.content === "string") text += delta.content;
+  const res = streamText({
+    model: route.provider.languageModel(route.model),
+    messages: toModelMessages(opts.messages as Parameters<typeof toModelMessages>[0]),
+    allowSystemInMessages: true,
+    abortSignal: opts.signal,
+    maxRetries: 0,
+    maxOutputTokens: maxTokens,
+    ...(temperature !== undefined ? { temperature } : {}),
   });
+  let text = "";
+  try {
+    for await (const chunk of res.fullStream) {
+      if (chunk.type === "text-delta") text += chunk.text;
+      else if (chunk.type === "error") throw toUpstreamError(chunk.error);
+      else if (chunk.type === "abort") throw toAbortError(opts.signal);
+    }
+  } catch (error) {
+    // Transport failures propagate as-is (the queue retries); signal aborts
+    // reject with the signal's own reason (the SDK also delivers them as the
+    // `abort` chunk above when it recognizes them).
+    throw toUpstreamError(error);
+  }
   return text.trim();
 }
 

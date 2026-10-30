@@ -4,7 +4,7 @@ import { ensureReady } from "@/lib/db";
 import { db, setFastModel, setSetting } from "./support/db";
 import { seedModel } from "./support/catalog";
 import { adminUser, type AdminUser } from "./support/app";
-import { mockLemonade, sseCompletion, type LemonadeMock } from "./support/lemonade";
+import { mockLemonade, sseChatCompletion, type LemonadeMock } from "./support/lemonade";
 import { messages, threads } from "@/lib/db/schema";
 import type { EventConfig } from "@/lib/settings";
 import { invalidateSettingsCache } from "@/lib/settings";
@@ -123,14 +123,14 @@ describe("handleAudioTranscription — guards", () => {
       skipped: "already_done",
     });
     // force re-runs and overwrites.
-    mock.route(CHAT, () => sseCompletion("hello world"));
+    mock.route(CHAT, () => sseChatCompletion("hello world"));
     const res = await handleAudioTranscription(makeCtx({ messageId: id, force: true }));
     expect(res).toEqual({ transcribed: true, chars: "hello world".length });
     expect(metaOf(id).audioTranscript).toBe("hello world");
   });
 
   it("empty existing transcript does NOT count as done", async () => {
-    mock.route(CHAT, () => sseCompletion("hello world"));
+    mock.route(CHAT, () => sseChatCompletion("hello world"));
     const id = seedMessage(JSON.stringify({ audio: AUDIO, audioTranscript: "" }));
     expect(await handleAudioTranscription(makeCtx({ messageId: id }))).toEqual({
       transcribed: true,
@@ -158,7 +158,7 @@ describe("handleAudioTranscription — guards", () => {
 
 describe("handleAudioTranscription — runs", () => {
   it("persists the transcript and flags on the message meta", async () => {
-    mock.route(CHAT, () => sseCompletion("hello world"));
+    mock.route(CHAT, () => sseChatCompletion("hello world"));
     const id = seedMessage(JSON.stringify({ audio: AUDIO }));
     const res = await handleAudioTranscription(makeCtx({ messageId: id }));
     expect(res).toEqual({ transcribed: true, chars: "hello world".length });
@@ -172,13 +172,19 @@ describe("handleAudioTranscription — runs", () => {
     const body = JSON.parse(mock.lastCall(CHAT)!.body as string) as Record<string, unknown>;
     const msgs = body.messages as { role: string; content: unknown[] }[];
     expect(msgs[0]!.content[0]).toEqual({ type: "text", text: TRANSCRIBE_PROMPT });
-    expect((msgs[0]!.content[1] as Record<string, Record<string, string>>).input_audio.data).toBe(AUDIO);
+    // M3: the SDK emits the standard OpenAI audio shape — bare base64 +
+    // format (v1 forwarded the full data URL verbatim; llama-server accepts
+    // both — verified live per migration plan S7).
+    expect((msgs[0]!.content[1] as Record<string, Record<string, string>>).input_audio).toEqual({
+      data: "UklGRg==",
+      format: "wav",
+    });
     expect(body).not.toHaveProperty("chat_template_kwargs"); // thinking stays on (see handler note)
     expect(body.temperature).toBe(0);
   });
 
   it("truncates very long transcripts", async () => {
-    mock.route(CHAT, () => sseCompletion("x".repeat(TRANSCRIPT_MAX_CHARS + 500)));
+    mock.route(CHAT, () => sseChatCompletion("x".repeat(TRANSCRIPT_MAX_CHARS + 500)));
     const id = seedMessage(JSON.stringify({ audio: AUDIO }));
     const res = await handleAudioTranscription(makeCtx({ messageId: id }));
     expect(res).toEqual({ transcribed: true, chars: TRANSCRIPT_MAX_CHARS });
@@ -187,7 +193,7 @@ describe("handleAudioTranscription — runs", () => {
   it("transcribes >30s audio segment by segment and joins the parts", async () => {
     const replies = ["first part", "second part", "third part"];
     let n = 0;
-    mock.route(CHAT, () => sseCompletion(replies[n++] ?? "extra"));
+    mock.route(CHAT, () => sseChatCompletion(replies[n++] ?? "extra"));
     const id = seedMessage(JSON.stringify({ audio: longWav(61) }));
     const res = await handleAudioTranscription(makeCtx({ messageId: id }));
     expect(res).toEqual({ transcribed: true, chars: "first part second part third part".length });
@@ -196,7 +202,7 @@ describe("handleAudioTranscription — runs", () => {
   });
 
   it("stops segmenting once the transcript hits the char cap", async () => {
-    mock.route(CHAT, () => sseCompletion("x".repeat(TRANSCRIPT_MAX_CHARS)));
+    mock.route(CHAT, () => sseChatCompletion("x".repeat(TRANSCRIPT_MAX_CHARS)));
     const id = seedMessage(JSON.stringify({ audio: longWav(91) }));
     const res = await handleAudioTranscription(makeCtx({ messageId: id }));
     expect(res).toEqual({ transcribed: true, chars: TRANSCRIPT_MAX_CHARS });
@@ -206,7 +212,7 @@ describe("handleAudioTranscription — runs", () => {
 
   it("marks failure when a later segment fails", async () => {
     let n = 0;
-    mock.route(CHAT, () => (n++ === 0 ? sseCompletion("first part") : new Response("nope", { status: 500 })));
+    mock.route(CHAT, () => (n++ === 0 ? sseChatCompletion("first part") : new Response("nope", { status: 500 })));
     const id = seedMessage(JSON.stringify({ audio: longWav(45) }));
     const res = await handleAudioTranscription(makeCtx({ messageId: id }));
     expect(res).toMatchObject({ transcribed: false });
@@ -239,7 +245,7 @@ describe("handleAudioTranscription — runs", () => {
     const id = seedMessage(JSON.stringify({ audio: AUDIO }));
     mock.route(CHAT, () => {
       db.delete(messages).where(eq(messages.id, id)).run();
-      return sseCompletion("late answer");
+      return sseChatCompletion("late answer");
     });
     const res = await handleAudioTranscription(makeCtx({ messageId: id }));
     expect(res).toEqual({ transcribed: true, chars: "late answer".length });

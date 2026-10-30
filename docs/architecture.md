@@ -41,16 +41,23 @@ How Yasha works internally. Product-level description lives in the [README](../R
 
 ### Chat turn (web UI)
 1. `POST /api/chat` — auth via better-auth session cookie; attachments (images/audio) are
-   validated/stored beforehand under `/data`.
+   validated/stored beforehand under `/data`. The client is the AI SDK's `useChat`
+   (`@ai-sdk/react`): the wire body carries only the new user turn + thread/model/attachments
+   (history is rebuilt server-side), and the response is the AI SDK **UI-message stream
+   ("protocol v2")** assembled by `lib/chat/stream.ts` — thread id via a `data-thread` part,
+   tool chips via `data-tool`, terminal failures via `data-error {code}`.
 2. Model choice: user picks Fast/Smart; routing + capability flags come from the synced
    provider catalog (`lib/provider/catalog.ts`, TTL 60 s, stale rows served on upstream failure).
-3. If tools are enabled (instance `mcp.enabled`, not per-user opted out), `lib/mcp/loop.ts` runs
-   bounded tool rounds: provider completion → tool calls → MCP clients (`lib/mcp/client.ts`,
-   stdio or HTTP; `lib/mcp/oauth/` for OAuth'd remote servers) → results fed back.
+3. If tools are enabled (instance `mcp.enabled`, not per-user opted out), the AI SDK loop runs
+   bounded tool rounds (`streamText` + `stopWhen: stepCountIs(...)`): MCP tools are exposed as
+   AI SDK tools (`lib/mcp/ai-tools.ts` over `lib/mcp/client.ts`, stdio or HTTP;
+   `lib/mcp/oauth/` for OAuth'd remote servers) and chip events stream out as `data-tool` parts.
 4. Memory recall (FTS5 + optional summaries) is injected per `lib/memory/recall.ts`.
-5. The upstream stream is re-emitted as SSE (first-token timeout guarded); token deltas are
-   persisted at completion, then enqueued jobs may follow (title generation, audio transcription,
-   memory extraction).
+5. Generation is AI SDK `streamText` against the provider's chat-completions endpoint
+   (`lib/provider/language-model.ts`; first-token timeout guarded); reasoning deltas are dropped,
+   text + tool records are persisted at completion (also on client abort), then enqueued jobs
+   may follow (title generation, audio transcription, memory extraction). Background jobs run
+   their completions through the same seam (`completeOnce`).
 
 ### OpenAI-compatible endpoint (`/v1`)
 `POST /v1/chat/completions` + `GET /v1/models` authenticate with per-user API keys

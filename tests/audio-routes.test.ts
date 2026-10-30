@@ -8,7 +8,7 @@ import { db, setFastModel, setSetting, rawSqlite } from "./support/db";
 import { clearModels, seedModel } from "./support/catalog";
 import { invalidateSettingsCache } from "@/lib/settings";
 import { callRoute, signUp, waitFor, type TestUser } from "./support/app";
-import { mockLemonade, sseCompletion, type LemonadeMock } from "./support/lemonade";
+import { mockLemonade, sseChatCompletion, type LemonadeMock } from "./support/lemonade";
 import { jobs, messages, threads } from "@/lib/db/schema";
 import { VOICE_MESSAGE_MARKER } from "@/lib/audio-input";
 
@@ -44,7 +44,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   mock = mockLemonade();
-  mock.route(CHAT, () => sseCompletion("sure"));
+  mock.route(CHAT, () => sseChatCompletion("sure"));
   db.delete(messages).run();
   db.delete(threads).run();
   db.delete(jobs).run();

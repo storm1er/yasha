@@ -1,6 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { and, eq, sql } from "drizzle-orm";
 import { getAuthedUserId } from "@/lib/api-auth";
+import { buildChatResponse } from "@/lib/chat/stream";
+import { toModelMessages } from "@/lib/chat/model-messages";
 import {
   buildUpstreamMessages,
   normalizeAttachments,
@@ -10,16 +12,9 @@ import {
 import { AUDIO_TURN_INSTRUCTION } from "@/lib/audio-input";
 import { db, ensureReady } from "@/lib/db";
 import { messages, threads } from "@/lib/db/schema";
-import { fastModel, getSettingInt, mcpEnabled, mcpMaxToolRounds, memoryEnabled, resolveEventConfig, smartModel } from "@/lib/settings";
+import { fastModel, getSettingInt, mcpEnabled, memoryEnabled, resolveEventConfig, smartModel } from "@/lib/settings";
 import { buildToolset, type Toolset } from "@/lib/mcp/bridge";
-import {
-  createToolCallAccumulator,
-  createTurnParts,
-  dispatchToolCalls,
-  expandToolRounds,
-  type ChatUpstreamMessage,
-  type ToolRoundRecord,
-} from "@/lib/mcp/loop";
+import { expandToolRounds, type ChatUpstreamMessage } from "@/lib/mcp/loop";
 import { buildMemoryContext } from "@/lib/memory/recall";
 import { stampUserContent, QUOTED_DATA_LINE } from "@/lib/memory/transcript";
 import { getThreadSummary } from "@/lib/memory/summary-store";
@@ -32,10 +27,8 @@ import {
   releaseGeneration,
   tryAcquireGeneration,
 } from "@/lib/provider/gate";
-import { forEachSseData } from "@/lib/provider/http";
 import { ensureCatalog, isAudioInputModel, pickProvider, upstreamModelId, type CatalogState } from "@/lib/provider/catalog";
 import { chatProviders } from "@/lib/provider/registry";
-import type { ChatProvider } from "@/lib/provider/types";
 import { rateLimit } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
@@ -326,7 +319,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "busy" }, { status: 429 });
   }
 
-  const stream = buildStream({
+  const stream = buildChatResponse({
     req,
     controller,
     userId,
@@ -334,47 +327,17 @@ export async function POST(req: NextRequest) {
     userMsgId,
     userMeta: meta,
     model,
-    upstreamModel,
-    provider,
-    upstreamMessages: expandedMessages,
+    languageModel: provider.languageModel(upstreamModel),
+    modelMessages: toModelMessages(expandedMessages),
     toolset,
     newThread,
     firstTokenTimeoutMs,
     heartbeatMs,
+    onToolsRejected: () => void noToolSupport.add(model),
     release: () => releaseGeneration(userId),
   });
-
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream; charset=utf-8",
-      "Cache-Control": "no-store, no-transform",
-      "X-Accel-Buffering": "no",
-      Connection: "keep-alive",
-    },
-  });
+  return stream;
 }
-
-type StreamOpts = {
-  req: NextRequest;
-  controller: AbortController;
-  userId: string;
-  threadId: string;
-  userMsgId: string;
-  /** Attachment meta of the persisted user message (re-serialized on failure
-   * marking so images/audio survive the `error` annotation). */
-  userMeta: Record<string, unknown>;
-  model: string;
-  /** The serving provider's own (un-namespaced) id for `model` — what goes
-   *  in the outbound completion body (Q6 canonical ids stay Yasha-internal). */
-  upstreamModel: string;
-  provider: ChatProvider;
-  upstreamMessages: ChatUpstreamMessage[];
-  toolset: Toolset;
-  newThread: boolean;
-  firstTokenTimeoutMs: number;
-  heartbeatMs: number;
-  release: () => void;
-};
 
 /** True when the thread's last row is the identical user turn the client is
  * resending (same text + same attachments) — a retry of a failed turn. */
@@ -395,291 +358,3 @@ function isSameTurn(
   );
 }
 
-function buildStream(opts: StreamOpts): ReadableStream<Uint8Array> {
-  const enc = new TextEncoder();
-  let assistantText = "";
-  let usage: Record<string, unknown> | null = null;
-  let firstTokenSeen = false;
-  let firstTokenTimedOut = false;
-  let clientAborted = false;
-  let persisted = false;
-  const toolRecords: ToolRoundRecord[] = [];
-  // Execution-order interleaving of text and tool rounds (issue #7), persisted
-  // in meta.parts so both clients re-render chips at their original position.
-  const turnParts = createTurnParts();
-  const toolsMeta = (): Record<string, unknown> => {
-    const parts = turnParts.parts();
-    return parts ? { tools: toolRecords, parts } : {};
-  };
-
-  // Failed turns keep the user message and annotate its meta with the error
-  // code (timeout / upstream_* / empty_response) so both clients can render a
-  // persistent "LLM timed out, retry?" notice even after a reload.
-  const markFailed = (code: string) =>
-    db
-      .update(messages)
-      .set({ metaJson: JSON.stringify({ ...opts.userMeta, error: code }) })
-      .where(eq(messages.id, opts.userMsgId))
-      .run();
-
-  const onClientAbort = () => {
-    clientAborted = true;
-    opts.controller.abort();
-  };
-  opts.req.signal.addEventListener("abort", onClientAbort);
-
-  const persist = async (meta: Record<string, unknown>) => {
-    if (persisted || assistantText.length === 0) return;
-    persisted = true;
-    const now = new Date();
-    await db
-      .insert(messages)
-      .values({
-        id: crypto.randomUUID(),
-        threadId: opts.threadId,
-        role: "assistant",
-        content: assistantText,
-        metaJson: JSON.stringify(meta),
-        createdAt: now,
-      })
-      .run();
-    await db.update(threads).set({ updatedAt: now }).where(eq(threads.id, opts.threadId)).run();
-    // Fire-and-forget, INSERT-only: zero latency added to the SSE path.
-    // `after_persist` for this task means once per chat: only brand-new threads
-    // (first exchange). idle/cron titles come from the sweeper; `never` nothing.
-    if (opts.newThread && resolveEventConfig("chat.title_generation").schedule === "after_persist") {
-      void enqueueJob({
-        type: "chat.title_generation",
-        threadId: opts.threadId,
-        userId: opts.userId,
-        payload: { fromMessageId: opts.userMsgId },
-      }).catch(() => {
-        /* queue best-effort */
-      });
-    }
-    // after_persist for memory tasks = every exchange; the dedupe upsert
-    // collapses races (running rows are never disturbed).
-    if (memoryEnabled() && getUserMemoryEnabled(opts.userId)) {
-      for (const type of ["memory.fact_extraction", "memory.thread_summary"] as const) {
-        const cfg = resolveEventConfig(type);
-        if (!cfg.enabled || cfg.schedule !== "after_persist") continue;
-        void enqueueJob({
-          type,
-          threadId: opts.threadId,
-          userId: opts.userId,
-          payload: { fromMessageId: opts.userMsgId },
-        }).catch(() => {
-          /* queue best-effort */
-        });
-      }
-    }
-  };
-
-  let heartbeat: ReturnType<typeof setInterval> | null = null;
-
-  const cleanup = async () => {
-    opts.req.signal.removeEventListener("abort", onClientAbort);
-    if (heartbeat) {
-      clearInterval(heartbeat);
-      heartbeat = null;
-    }
-    opts.release();
-  };
-
-  return new ReadableStream<Uint8Array>({
-    async start(client) {
-      const sendRaw = (frame: string) => {
-        try {
-          client.enqueue(enc.encode(frame));
-        } catch {
-          /* client gone */
-        }
-      };
-      const send = (obj: Record<string, unknown>) => sendRaw(`data: ${JSON.stringify(obj)}\n\n`);
-      // SSE comment keep-alive: long tool rounds / slow first tokens produce no
-      // bytes, and idle proxies drop the response. Clients skip comment lines.
-      heartbeat = setInterval(() => sendRaw(": ping\n\n"), opts.heartbeatMs);
-      try {
-        send({ threadId: opts.threadId });
-      } catch {
-        /* ignore */
-      }
-
-      let chatMessages = opts.upstreamMessages;
-      let useTools = opts.toolset.specs.length > 0;
-
-      // First-token timeout applies to the first model round only (tool
-      // round-trips may legitimately take longer).
-      let timeout: ReturnType<typeof setTimeout> | null = setTimeout(() => {
-        firstTokenTimedOut = true;
-        opts.controller.abort();
-      }, opts.firstTokenTimeoutMs);
-      const clearFirstTokenTimer = () => {
-        if (timeout) {
-          clearTimeout(timeout);
-          timeout = null;
-        }
-        firstTokenSeen = true;
-      };
-
-      let retried4xx = false;
-      let round = 0;
-      let failed = false;
-
-      for (;;) {
-        const toolAcc = createToolCallAccumulator();
-        const body: Record<string, unknown> = {
-          model: opts.upstreamModel,
-          messages: chatMessages,
-          stream: true,
-          stream_options: { include_usage: true },
-        };
-        if (useTools) {
-          body.tools = opts.toolset.specs;
-          body.tool_choice = "auto";
-        }
-
-        let upstream: Response;
-        try {
-          upstream = await opts.provider.completion(body, opts.controller.signal);
-        } catch {
-          clearFirstTokenTimer();
-          if (clientAborted) {
-            // Aborted mid-turn: persist any partial answer (incl. earlier tool
-            // rounds); nothing to persist if no token was ever generated.
-            if (assistantText.length > 0) {
-              await persist({ model: opts.model, aborted: true, usage, ...toolsMeta() });
-              send({ done: true, aborted: true });
-              try {
-                client.close();
-              } catch {
-                /* already closed */
-              }
-            }
-            await cleanup();
-            return;
-          }
-          const connectError = firstTokenTimedOut ? "timeout" : "upstream_connect";
-          await markFailed(connectError);
-          send({ error: connectError });
-          client.close();
-          await cleanup();
-          return;
-        }
-
-        if (!upstream.ok || !upstream.body) {
-          // Capability degradation (once per request): a 4xx before any delta
-          // with tools attached means the model rejects tool calling — retry
-          // without tools and remember the model id.
-          if (useTools && !retried4xx && !firstTokenSeen && upstream.status >= 400 && upstream.status < 500) {
-            retried4xx = true;
-            useTools = false;
-            noToolSupport.add(opts.model);
-            continue;
-          }
-          clearFirstTokenTimer();
-          if (!clientAborted) {
-            await markFailed(`upstream_status_${upstream.status}`);
-          }
-          send({ error: `upstream_status_${upstream.status}` });
-          client.close();
-          await cleanup();
-          return;
-        }
-
-        const handlePayload = (payload: string) => {
-          if (!payload || payload === "[DONE]") return;
-          let chunk: {
-            choices?: { delta?: { content?: unknown; tool_calls?: unknown } }[];
-            usage?: Record<string, unknown>;
-          };
-          try {
-            chunk = JSON.parse(payload);
-          } catch {
-            return;
-          }
-          // Only delta.content is extracted; reasoning/reasoning_details and all
-          // other upstream fields are dropped and never forwarded to client or DB.
-          const delta = chunk.choices?.[0]?.delta;
-          if (delta) {
-            clearFirstTokenTimer();
-            toolAcc.feed(delta.tool_calls);
-          }
-          if (typeof delta?.content === "string" && delta.content.length > 0) {
-            assistantText += delta.content;
-            turnParts.onText(delta.content);
-            send({ c: delta.content });
-          }
-          if (chunk.usage) usage = chunk.usage;
-        };
-
-        failed = false;
-        try {
-          await forEachSseData(upstream.body, handlePayload);
-        } catch {
-          failed = true;
-        }
-        clearFirstTokenTimer();
-        if (failed || clientAborted) break;
-
-        const calls = toolAcc.calls();
-        if (calls.length === 0 || round >= mcpMaxToolRounds()) break;
-
-        const dispatched = await dispatchToolCalls(
-          calls,
-          opts.toolset.handles,
-          (ev) => send({ tool: ev }),
-          opts.controller.signal,
-        );
-        toolRecords.push(...dispatched.records);
-        turnParts.onToolRound(dispatched.records.length);
-        chatMessages = [...chatMessages, ...dispatched.messages];
-        round += 1;
-        if (opts.controller.signal.aborted) {
-          clientAborted = true;
-          break;
-        }
-      }
-
-      try {
-        if (clientAborted) {
-          if (assistantText.length > 0) await persist({ model: opts.model, aborted: true, usage, ...toolsMeta() });
-          send({ done: true, aborted: true });
-        } else if (failed) {
-          if (assistantText.length > 0) {
-            await persist({ model: opts.model, aborted: true, usage, ...toolsMeta() });
-            send({ error: "upstream_stream" });
-          } else {
-            const streamError = firstTokenTimedOut ? "timeout" : "upstream_stream";
-            await markFailed(streamError);
-            send({ error: streamError });
-          }
-        } else if (assistantText.length === 0) {
-          await markFailed("empty_response");
-          send({ error: "empty_response" });
-        } else {
-          await persist({ model: opts.model, usage, ...toolsMeta() });
-          send({ done: true });
-        }
-      } catch {
-        /* persistence best-effort */
-      }
-      try {
-        client.close();
-      } catch {
-        /* already closed */
-      }
-      await cleanup();
-    },
-    async cancel() {
-      clientAborted = true;
-      opts.controller.abort();
-      try {
-        if (assistantText.length > 0) await persist({ model: opts.model, aborted: true, usage, ...toolsMeta() });
-      } catch {
-        /* best-effort */
-      }
-      await cleanup();
-    },
-  });
-}

@@ -40,19 +40,25 @@ data class ChatRequestBody(
     val attachments: ChatAttachments? = null,
 )
 
-// Maps one SSE payload JSON to a ChatEvent (pure — unit-tested).
+// Maps one SSE payload JSON to a ChatEvent (pure — unit-tested). Protocol v2
+// (lib/chat/stream.ts): chunk `type` dispatch — custom data parts
+// (`data-thread`, `data-tool`, `data-error {code}`), `text-delta` for tokens,
+// and the terminal `[DONE]` sentinel (no explicit done frame; a stream that
+// ends BEFORE [DONE] never yields Done — the caller treats that as aborted).
 object ChatEvents {
     private val json = Json { ignoreUnknownKeys = true }
 
     fun parse(payload: String): ChatEvent? = try {
-        when (val obj = json.parseToJsonElement(payload)) {
-            is JsonObject -> when {
-                obj["threadId"] != null -> ChatEvent.ThreadId(obj["threadId"]!!.jsonPrimitive.content)
-                obj["error"] != null -> ChatEvent.Failure(obj["error"]!!.jsonPrimitive.content)
-                obj["done"] != null -> ChatEvent.Done(aborted = obj["aborted"]?.jsonPrimitive?.booleanOrNull == true)
-                obj["c"] != null -> ChatEvent.Delta(obj["c"]!!.jsonPrimitive.content)
-                obj["tool"] != null -> {
-                    val tool = obj["tool"]!!.jsonObject
+        if (payload == "[DONE]") {
+            ChatEvent.Done(aborted = false)
+        } else when (val obj = json.parseToJsonElement(payload)) {
+            is JsonObject -> when (obj["type"]?.jsonPrimitive?.contentOrNull) {
+                "text-delta" -> obj["delta"]?.jsonPrimitive?.contentOrNull?.let { ChatEvent.Delta(it) }
+                "data-thread" -> (obj["data"] as? JsonObject)
+                    ?.get("threadId")?.jsonPrimitive?.contentOrNull?.let { ChatEvent.ThreadId(it) }
+                "data-error" -> (obj["data"] as? JsonObject)
+                    ?.get("code")?.jsonPrimitive?.contentOrNull?.let { ChatEvent.Failure(it) }
+                "data-tool" -> (obj["data"] as? JsonObject)?.let { tool ->
                     ChatEvent.ToolProgress(
                         server = tool["server"]?.jsonPrimitive?.content.orEmpty(),
                         name = tool["name"]?.jsonPrimitive?.content.orEmpty(),
@@ -62,7 +68,7 @@ object ChatEvents {
                         truncated = tool["truncated"]?.jsonPrimitive?.booleanOrNull == true,
                     )
                 }
-                else -> null
+                else -> null // start / text-start / text-end / finish / sources: no app effect
             }
             else -> null
         }

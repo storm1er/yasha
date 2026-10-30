@@ -27,7 +27,7 @@ import {
 } from "@/lib/db/schema";
 import { getSettingInt, memoryEnabled } from "@/lib/settings";
 import { outputLanguageFor } from "@/lib/user-locale";
-import { completeOnce, type JobHandler, type JobTx } from "@/lib/jobs/worker";
+import { completeOnce, errMessage, type JobHandler, type JobTx } from "@/lib/jobs/worker";
 import { searchMessagesText } from "@/lib/search/fts";
 import { getMemoryCard, parseCardEntries, setMemoryCardTx } from "./card";
 import {
@@ -346,7 +346,8 @@ export const handleDreaming: JobHandler = async ({ job, cfg, signal }) => {
         maxTokens: 4096,
         temperature: 0.1,
       });
-      if (signal.aborted) throw new Error("aborted");
+      // No post-call abort guard: completeOnce rejects on any abort, so a
+      // resolved call never needs the v1 "did the night stop mid-call" check.
       const rowsById = new Map(chunk.map((m) => [m.id, m]));
       const ops = validateOps(parseArray(raw), new Set(chunk.map((m) => m.id)));
       const now = new Date();
@@ -525,7 +526,7 @@ export const handleDreaming: JobHandler = async ({ job, cfg, signal }) => {
       }
     } catch (err) {
       if (signal.aborted) throw err;
-      insightError = err instanceof Error ? err.message : String(err);
+      insightError = errMessage(err);
     }
   }
 
@@ -573,7 +574,7 @@ export const handleDreaming: JobHandler = async ({ job, cfg, signal }) => {
       }
     } catch (err) {
       if (signal.aborted) throw err;
-      cardError = err instanceof Error ? err.message : String(err);
+      cardError = errMessage(err);
     }
   }
 

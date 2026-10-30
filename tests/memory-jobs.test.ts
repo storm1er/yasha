@@ -4,7 +4,7 @@ import { ensureReady } from "@/lib/db";
 import { db } from "./support/db";
 import { setSetting } from "./support/db";
 import { adminUser, type AdminUser } from "./support/app";
-import { mockLemonade, sseCompletion, type LemonadeMock } from "./support/lemonade";
+import { mockLemonade, sseChatCompletion, type LemonadeMock } from "./support/lemonade";
 import { jobCheckpoints, jobs, memories, messages, threadSummaries, threads, userSettings } from "@/lib/db/schema";
 import { handleFactExtraction } from "@/lib/memory/extract";
 import { handleThreadSummary } from "@/lib/memory/summarize";
@@ -93,7 +93,7 @@ function mockCompletions(...texts: (string | Error | Response)[]): LemonadeMock 
     i += 1;
     if (t instanceof Error) throw t;
     if (t instanceof Response) return t;
-    return sseCompletion(t);
+    return sseChatCompletion(t);
   });
   return mock;
 }
@@ -345,7 +345,7 @@ describe("handleFactExtraction", () => {
     let i = 0;
     mock.route(COMPLETIONS, () => {
       i += 1;
-      if (i === 1) return sseCompletion('[{"kind":"fact","text":"one more"}]');
+      if (i === 1) return sseChatCompletion('[{"kind":"fact","text":"one more"}]');
       throw { weird: true }; // non-Error thrown by the transport
     });
     const h = makeCtx({ job: { threadId: "thD" } });
@@ -356,11 +356,14 @@ describe("handleFactExtraction", () => {
     const h2 = makeCtx({ job: { threadId: "thD" } });
     mock.route(COMPLETIONS, () => {
       i += 1;
-      if (i === 1) return sseCompletion('[{"kind":"fact","text":"another fact"}]');
+      if (i === 1) return sseChatCompletion('[{"kind":"fact","text":"another fact"}]');
       h2.ac.abort();
       throw new Error("mid-merge");
     });
-    await expect(handleFactExtraction(h2.ctx)).rejects.toThrow("mid-merge");
+    // M3: once the signal aborts, the SDK classifies the dying call as an
+    // abort (chunk) — the stub's custom message is replaced by the signal's
+    // abort reason. The job still REJECTS (nothing is swallowed).
+    await expect(handleFactExtraction(h2.ctx)).rejects.toThrow(/abort/i);
   });
 
   it("merge parse mismatch → default adds + mergeError", async () => {
@@ -399,7 +402,8 @@ describe("handleFactExtraction", () => {
     const h3 = makeCtx({ job: { threadId: "th9" } });
     mockCompletions(new Error("abort-thing"));
     h3.ac.abort();
-    await expect(handleFactExtraction(h3.ctx)).rejects.toThrow("abort-thing");
+    // M3: pre-aborted signal short-circuits streamText → abort reason.
+    await expect(handleFactExtraction(h3.ctx)).rejects.toThrow(/abort/i);
   });
 });
 
@@ -477,16 +481,16 @@ describe("handleThreadSummary", () => {
     expect(res).toMatchObject({ skipped: "nothing_older_than_window" }); // "c" is excluded by the same-ts floor tie-break
   });
 
-  it("empty completion throws; aborted mid-run throws summary_empty", async () => {
+  it("empty completion throws; think-only completion throws summary_empty", async () => {
     seedThread("sum6");
     seedOlderWindow("sum6", 4, new Date("2026-05-05T10:00:00Z"));
     mockCompletions("");
     await expect(handleThreadSummary(makeCtx({ job: { type: "memory.thread_summary", threadId: "sum6" } }).ctx)).rejects.toThrow("empty_completion");
+    // Scrubbing happens INSIDE completeOnce: reasoning-only output survives
+    // the empty check but scrubs to "" → the handler refuses it.
     const mock = mockLemonade();
-    mock.route(COMPLETIONS, () => sseCompletion("ok summary"));
-    const h = makeCtx({ job: { type: "memory.thread_summary", threadId: "sum6" } });
-    h.ac.abort();
-    await expect(handleThreadSummary(h.ctx)).rejects.toThrow("summary_empty");
+    mock.route(COMPLETIONS, () => sseChatCompletion("<" + "think>spin</" + "think>"));
+    await expect(handleThreadSummary(makeCtx({ job: { type: "memory.thread_summary", threadId: "sum6" } }).ctx)).rejects.toThrow("summary_empty");
   });
 });
 
@@ -572,7 +576,7 @@ describe("handleDreaming", () => {
     const h = dreamCtx();
     mock.route(COMPLETIONS, () => {
       h.ac.abort();
-      return sseCompletion('[{"op":"supersede","staleId":"a1","winnerId":"a2"}]');
+      return sseChatCompletion('[{"op":"supersede","staleId":"a1","winnerId":"a2"}]');
     });
     await expect(handleDreaming(h.ctx)).rejects.toThrow("aborted");
     expect(dreamCursor()).toBeUndefined();
@@ -586,7 +590,7 @@ describe("handleDreaming", () => {
     let calls = 0;
     mock.route(COMPLETIONS, () => {
       calls += 1;
-      return sseCompletion("[]");
+      return sseChatCompletion("[]");
     });
     const h = dreamCtx();
     h.ac.abort();
@@ -660,7 +664,9 @@ describe("handleDreaming", () => {
       h.ac.abort();
       throw new Error("card-abort");
     });
-    await expect(handleDreaming(h.ctx)).rejects.toThrow("card-abort");
+    // M3: with the signal already aborted the SDK classifies the dying call
+    // as an abort — the job rethrows the abort reason (still a rejection).
+    await expect(handleDreaming(h.ctx)).rejects.toThrow(/abort/i);
   });
 
   it("card completion that yields no valid entries is a card_empty error, not a crash", async () => {
@@ -678,7 +684,7 @@ describe("handleDreaming", () => {
     let i = 0;
     mock.route(COMPLETIONS, () => {
       i += 1;
-      if (i === 1) return sseCompletion("[]");
+      if (i === 1) return sseChatCompletion("[]");
       throw { code: 7 };
     });
     const res = await handleDreaming(dreamCtx().ctx);
@@ -731,9 +737,9 @@ describe("handleDreaming", () => {
       i += 1;
       if (i === 1) {
         busyWait(5100); // the clock crosses the soft deadline during the first chunk
-        return sseCompletion("[]");
+        return sseChatCompletion("[]");
       }
-      return sseCompletion(cardJson("after one chunk."));
+      return sseChatCompletion(cardJson("after one chunk."));
     });
     const res = await handleDreaming(dreamCtx().ctx);
     expect(res).toMatchObject({ chunksProcessed: 1, cardUpdated: true });

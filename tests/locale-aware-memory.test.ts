@@ -8,7 +8,7 @@ import { ensureReady } from "@/lib/db";
 import { db, setSetting } from "./support/db";
 import { adminUser, callRoute, jsonOf, sessionId, signUp, type AdminUser } from "./support/app";
 import { setCurrentHeaders } from "./support/request-context";
-import { mockLemonade, sseCompletion, type LemonadeMock } from "./support/lemonade";
+import { mockLemonade, sseChatCompletion, type LemonadeMock } from "./support/lemonade";
 import { memories, messages, threads, user as userTable, jobCheckpoints, threadSummaries } from "@/lib/db/schema";
 import { GET as getMe } from "@/app/api/me/route";
 import { PATCH as patchLocale } from "@/app/api/me/locale/route";
@@ -72,7 +72,7 @@ function mockCompletions(...texts: string[]): LemonadeMock {
   mock.route(COMPLETIONS, () => {
     const t = texts[Math.min(i, texts.length - 1)];
     i += 1;
-    return sseCompletion(t);
+    return sseChatCompletion(t);
   });
   return mock;
 }

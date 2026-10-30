@@ -152,6 +152,24 @@ export function sseCompletion(
   return new Response(body, { headers: { "content-type": "text/event-stream" } });
 }
 
+/** Fully realistic chat-completions SSE: chunk envelope + role delta +
+ *  finish_reason + optional usage (the AI SDK compat parser flags streams
+ *  missing finish_reason — M0 spike finding, use this for SDK-driven tests). */
+export function sseChatCompletion(
+  text: string,
+  opts: { usage?: Record<string, number>; reasoning?: string } = {}
+): Response {
+  const env = { id: "chatcmpl-1", object: "chat.completion.chunk", created: 0, model: "mock" };
+  const line = (p: Record<string, unknown>) => `data: ${JSON.stringify({ ...env, ...p })}\n\n`;
+  let body = line({ choices: [{ index: 0, delta: { role: "assistant", content: "" } }] });
+  if (opts.reasoning) body += line({ choices: [{ index: 0, delta: { reasoning: opts.reasoning } }] });
+  if (text) body += line({ choices: [{ index: 0, delta: { content: text } }] });
+  body += line({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] });
+  if (opts.usage) body += line({ choices: [], usage: opts.usage });
+  body += "data: [DONE]\n\n";
+  return new Response(body, { headers: { "content-type": "text/event-stream" } });
+}
+
 /** Scripted chat-completions SSE responses (stream=true upstream), one reply
  *  per call in order; falls back to the last entry. */
 export function scriptedCompletions(texts: (string | Error)[]): (url: URL) => Response {
@@ -160,7 +178,7 @@ export function scriptedCompletions(texts: (string | Error)[]): (url: URL) => Re
     const t = texts[Math.min(n, texts.length - 1)];
     n += 1;
     if (t instanceof Error) throw t;
-    return sseCompletion(t);
+    return sseChatCompletion(t);
   };
 }
 
@@ -171,6 +189,8 @@ export function streamResponse(): {
   pushText(text: string): void;
   pushPayload(payload: unknown): void;
   pushRaw(line: string): void;
+  /** Envelope-shaped finish_reason frame (what the AI SDK parser requires). */
+  pushFinish(reason?: string): void;
   done(): void;
   fail(err?: Error): void;
   attach(signal?: AbortSignal | null): void;
@@ -212,6 +232,21 @@ export function streamResponse(): {
     },
     pushRaw(line) {
       safe(() => controller.enqueue(enc.encode(line)));
+    },
+    pushFinish(reason = "stop") {
+      safe(() =>
+        controller.enqueue(
+          enc.encode(
+            sseLine({
+              id: "chatcmpl-1",
+              object: "chat.completion.chunk",
+              created: 0,
+              model: "mock",
+              choices: [{ index: 0, delta: {}, finish_reason: reason }],
+            })
+          )
+        )
+      );
     },
     done() {
       finish(() => {

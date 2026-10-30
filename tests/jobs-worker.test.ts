@@ -20,7 +20,7 @@ import { adminUser, waitFor, type AdminUser } from "./support/app";
 import { db, rawSqlite, setFastModel, setSetting } from "./support/db";
 import { settings } from "@/lib/db/schema";
 import { invalidateSettingsCache } from "@/lib/settings";
-import { mockLemonade, scriptedCompletions, sseCompletion, streamResponse } from "./support/lemonade";
+import { mockLemonade, scriptedCompletions, sseChatCompletion, streamResponse } from "./support/lemonade";
 import { setUserMemoryEnabled } from "@/lib/memory/prefs";
 
 let admin: AdminUser;
@@ -446,7 +446,7 @@ describe("claim rejections", () => {
         s1.attach(call.signal);
         return s1.response;
       }
-      return sseCompletion("Free Slot");
+      return sseChatCompletion("Free Slot");
     });
     setFastModel();
     setSetting("memory.queue.concurrency", "2");
@@ -461,6 +461,7 @@ describe("claim rejections", () => {
     await new Promise((r) => setTimeout(r, 2200)); // a tick passes: free slot BUT same type in flight
     expect(row(second!)!.status).toBe("pending");
     s1.pushText("Busy");
+    s1.pushFinish();
     s1.done();
     await waitFor(() => row(first!)?.status === "succeeded" && row(second!)?.status === "succeeded", 10_000);
     stopWorker();
@@ -543,7 +544,7 @@ describe("title generation handler", () => {
         s.attach(call.signal);
         return s.response;
       }
-      return sseCompletion("Later Title");
+      return sseChatCompletion("Later Title");
     });
     setFastModel();
     const t1 = newThread();
@@ -557,6 +558,7 @@ describe("title generation handler", () => {
     await new Promise((r) => setTimeout(r, 2200)); // a tick passes while first is running
     expect(row(second!)!.status).toBe("pending"); // same-type in flight → skipped
     s.pushText("Later Title");
+    s.pushFinish();
     s.done();
     await waitFor(() => row(first!)?.status === "succeeded" && row(second!)?.status === "succeeded", 10_000);
     stopWorker();
@@ -576,7 +578,7 @@ describe("run failure paths", () => {
         s.attach(call.signal); // attempt 1: hangs until the job timeout aborts it
         return s.response;
       }
-      return sseCompletion(""); // attempt 2: fails fast (empty_completion)
+      return sseChatCompletion(""); // attempt 2: fails fast (empty_completion)
     });
     setFastModel();
     setSetting("chat.title_generation", JSON.stringify({ timeoutMs: 1000, backoffMs: 1000, maxAttempts: 9 }));
@@ -692,7 +694,7 @@ describe("checkpoints + deferred commits", () => {
 describe("schedule sweeps", () => {
   it("idle sweep: enqueues stale threads and re-enqueues terminal rows", async () => {
     const mock = mockLemonade();
-    mock.fallback(() => sseCompletion("A tidy summary"));
+    mock.fallback(() => sseChatCompletion("A tidy summary"));
     setFastModel();
     setSetting("chat.title_generation", JSON.stringify({ schedule: "idle", idleMinutes: 1 }));
     const old = 120_000;
@@ -800,7 +802,7 @@ describe("schedule sweeps", () => {
 
   it("cron sweep: fires title+dreaming rows, guards per fire minute, skips small threads", async () => {
     const mock = mockLemonade();
-    mock.fallback(() => sseCompletion("Cron Title"));
+    mock.fallback(() => sseChatCompletion("Cron Title"));
     setFastModel();
     setSetting("chat.title_generation", JSON.stringify({ schedule: "cron", cronExpr: "*/5 * * * *" }));
     const tOk = newThread({ ageMs: 360_000 });
@@ -994,7 +996,7 @@ describe("completeOnce (shared upstream call)", () => {
     mock.route("/v1/chat/completions", () => new Response(null, { status: 200 }));
     await expect(call("m")).rejects.toThrow("upstream_status_200");
     mock = mockLemonade();
-    mock.route("/v1/chat/completions", () => sseCompletion(""));
+    mock.route("/v1/chat/completions", () => sseChatCompletion(""));
     await expect(call("m")).rejects.toThrow("empty_completion");
     // Reasoning-only first stream (empty content) → one wider retry, then the hard failure.
     expect(
@@ -1002,33 +1004,51 @@ describe("completeOnce (shared upstream call)", () => {
     ).toEqual([2048, 8192]);
     mock = mockLemonade();
     let calls = 0;
-    mock.route("/v1/chat/completions", () => sseCompletion(++calls === 1 ? "" : "Recovered"));
+    mock.route("/v1/chat/completions", () => sseChatCompletion(++calls === 1 ? "" : "Recovered"));
     await expect(call("m", { maxTokens: 400 })).resolves.toBe("Recovered");
     expect(calls).toBe(2);
     mock = mockLemonade();
-    mock.route("/v1/chat/completions", () => sseCompletion("junk\nReal"));
+    mock.route("/v1/chat/completions", () => sseChatCompletion("junk\nReal"));
     await expect(call("m")).resolves.toBe("junk\nReal"); // no think tags → untouched
     mock = mockLemonade();
-    mock.route("/v1/chat/completions", () => sseCompletion("junk\n" + "<" + "think>x</" + "think>Real"));
+    mock.route("/v1/chat/completions", () => sseChatCompletion("junk\n" + "<" + "think>x</" + "think>Real"));
     await expect(call("m")).resolves.toBe("Real"); // reasoning traces stripped
     mock = mockLemonade();
-    mock.route("/v1/chat/completions", () => sseCompletion("Real", { reasoning: "deep thoughts" }));
+    mock.route("/v1/chat/completions", () => sseChatCompletion("Real", { reasoning: "deep thoughts" }));
     await expect(call("m")).resolves.toBe("Real"); // reasoning deltas ignored
     const body = JSON.parse(mock.lastCall()!.body!) as Record<string, unknown>;
     expect(body.max_tokens).toBe(2048); // sub-floor budgets are raised (thinking bills tokens)
     expect(body.temperature).toBeUndefined();
     expect(body.stream).toBe(true);
     mock = mockLemonade();
-    const s = streamResponse();
-    s.pushRaw("data: {this is not json\n\n");
-    s.pushPayload({ choices: [{ delta: { content: "junk" } }] });
-    s.pushText("Real");
-    s.pushPayload({ choices: [{ delta: { content: 42 } }] }); // non-string delta ignored
-    s.done();
-    mock.route("/v1/chat/completions", () => s.response);
-    await expect(call("m", { maxTokens: 4096, temperature: 0.5 })).resolves.toBe("junkReal");
+    mock.route("/v1/chat/completions", () => sseChatCompletion("Real"));
+    await expect(call("m", { maxTokens: 4096, temperature: 0.5 })).resolves.toBe("Real");
     const body2 = JSON.parse(mock.lastCall()!.body!) as Record<string, unknown>;
     expect(body2.max_tokens).toBe(4096); // budgets above the floor are honoured as-is
     expect(body2.temperature).toBe(0.5);
+    // M3 divergence (accepted): malformed SSE frames are FATAL for the SDK
+    // parser (v1 skipped them) — a bad frame after partial content fails the
+    // job instead of forgiving the stream.
+    mock = mockLemonade();
+    const s = streamResponse();
+    s.pushText("junk");
+    s.pushRaw("data: {this is not json\n\n");
+    s.pushText("Real");
+    s.done();
+    mock.route("/v1/chat/completions", () => s.response);
+    await expect(call("m")).rejects.toThrow("JSON parsing failed");
+  });
+});
+
+describe("completeOnce abort plumbing", () => {
+  it("rejects with Error('aborted') when the signal reason is not an Error", async () => {
+    const mock = mockLemonade();
+    mock.route("/v1/chat/completions", () => sseChatCompletion("never seen"));
+    const ac = new AbortController();
+    ac.abort("halt"); // non-Error abort reason → synthesized Error("aborted")
+    const { completeOnce } = await import("@/lib/jobs/worker");
+    await expect(
+      completeOnce({ model: "m", messages: [{ role: "user", content: "hi" }], signal: ac.signal })
+    ).rejects.toThrow("aborted");
   });
 });

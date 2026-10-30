@@ -30,7 +30,7 @@ import {
 } from "./support/app";
 import { db } from "./support/db";
 import { resetHealthProbes } from "@/lib/provider/health";
-import { json, mockLemonade, sseCompletion } from "./support/lemonade";
+import { json, mockLemonade, sseChatCompletion } from "./support/lemonade";
 
 let user: TestUser & { userId: string };
 let admin: AdminUser;
@@ -239,7 +239,7 @@ describe("multi-provider chat routing (M2b catalog)", () => {
     mock.route("alpha.invalid.test/v1/models", () => json({ data: [{ id: "a-model", labels: ["chat"], downloaded: true }] }));
     mock.route("beta.invalid.test/v1/models", () => json({ data: [{ id: "b-model", labels: ["chat"], downloaded: true }] }));
     mock.route("alpha.invalid.test/v1/chat/completions", () => new Response("wrong provider", { status: 500 }));
-    mock.route("beta.invalid.test/v1/chat/completions", () => sseCompletion("hi from beta"));
+    mock.route("beta.invalid.test/v1/chat/completions", () => sseChatCompletion("hi from beta"));
     const res = await callRoute(chatRoute.POST as RouteHandler, {
       method: "POST",
       path: "/api/chat",
