@@ -5,6 +5,18 @@ generated automatically by CI from Conventional Commits landing on `main`
 ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)).
 
+## [0.2.7] - 2026-10-30
+
+### Features
+- **provider:** AI SDK language-model seam on every adapter (M1) (3797334)
+- **chat:** /api/chat on AI SDK streamText with UI-message protocol v2 (M2) (fcca144)
+- **jobs:** CompleteOnce on AI SDK streamText (M3) (10565bb)
+
+### Other
+- Chat client on useChat + protocol v2 (89d506a)
+- Architecture docs for the AI SDK pipeline (b239936)
+- Android client speaks protocol v2 (0e31498)
+
 ## [0.2.5] - 2026-10-27
 
 ### Bug Fixes
