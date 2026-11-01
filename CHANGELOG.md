@@ -5,6 +5,15 @@ generated automatically by CI from Conventional Commits landing on `main`
 ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)).
 
+## [0.2.8] - 2026-11-01
+
+### Features
+- Generative UI Milestone 1 — display-only tool cards (issue #16) (219c981)
+
+### Other
+- Never clear the stored session on a transport failure (fixes #14) (e5c2aa9)
+- Settings parity phase 1 + admin field parity (issue #15) (371d15d)
+
 ## [0.2.7] - 2026-10-30
 
 ### Features
