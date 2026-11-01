@@ -78,8 +78,8 @@ private val DarkScheme = darkColorScheme(
 )
 
 @Composable
-fun YashaTheme(content: @Composable () -> Unit) {
-    val dark = isSystemInDarkTheme()
+fun YashaTheme(darkOverride: Boolean? = null, content: @Composable () -> Unit) {
+    val dark = darkOverride ?: isSystemInDarkTheme()
     val palette = if (dark) DarkPalette else LightPalette
     androidx.compose.runtime.CompositionLocalProvider(LocalYashaPalette provides palette) {
         MaterialTheme(colorScheme = if (dark) DarkScheme else LightScheme, content = content)

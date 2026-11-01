@@ -106,7 +106,9 @@ The Android client stores the `better-auth.session_token` cookie + CSRF token in
 `EncryptedSharedPreferences` and replays them on every call.
 
 - `POST <base>/api/auth/sign-in/email` — `{"email","password"}` → `Set-Cookie: better-auth.session_token`
-- `GET  <base>/api/auth/get-session` — session probe
+- `GET  <base>/api/auth/get-session` — session probe (tri-state, issue #14: only a
+  server-confirmed sign-out clears the stored token; a transport failure keeps the
+  session and shows the offline banner with auto-retry instead of the login form)
 - `POST <base>/api/auth/sign-out` — revoke
 
 Alternative (power users): an API key, `Authorization: Bearer <key>` against

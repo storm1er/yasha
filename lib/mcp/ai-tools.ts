@@ -10,6 +10,7 @@ import { jsonSchema, tool, type ToolSet } from "ai";
 import type { ToolEvent, ToolRoundRecord } from "./loop";
 import type { Toolset } from "./bridge";
 import { runToolCall } from "./bridge";
+import { extractToolCard } from "@/lib/chat/generative";
 
 export type AiToolLoop = {
   /** AI SDK tool set; `undefined` when no MCP tools are attached. */
@@ -55,6 +56,11 @@ export function createAiToolLoop(opts: {
         const out = await runToolCall(handle, raw, abortSignal);
         // `truncated` only when true — unchanged turns stay byte-stable.
         const truncatedFlag = out.truncated ? { truncated: true } : {};
+        // Generative UI (issue #16): a valid yasha_card envelope rides the
+        // terminal event and the persisted record; the raw JSON keeps flowing
+        // to the model untouched, and old clients ignore the extra field.
+        const card = out.ok ? extractToolCard(out.content) : null;
+        const cardFlag = card ? { card } : {};
         opts.sendEvent({
           server: handle.serverId,
           name: handle.tool,
@@ -63,6 +69,7 @@ export function createAiToolLoop(opts: {
           result: out.content,
           ms: out.ms,
           ...truncatedFlag,
+          ...cardFlag,
         });
         records.set(toolCallId, {
           server: handle.serverId,
@@ -72,6 +79,7 @@ export function createAiToolLoop(opts: {
           args: raw,
           result: out.content,
           ...truncatedFlag,
+          ...cardFlag,
         });
         return out.content;
       },

@@ -68,6 +68,8 @@ data class ToolMetaDto(
     val result: String? = null,
     // Result was cut at the server-side cap → amber warn chip (issue #8).
     val truncated: Boolean = false,
+    // Persisted generative-UI card (issue #16), same shape as the live event.
+    val card: CardDto? = null,
 )
 
 // GET/POST /api/mcp/prefs (per-user tool-use opt-out; null = follow instance).
@@ -101,10 +103,31 @@ sealed interface ChatEvent {
         val args: String? = null,
         val result: String? = null,
         val truncated: Boolean = false,
+        // Generative UI (issue #16): terminal events may carry a structured
+        // card (lib/chat/generative.ts envelope); rendered under the chip.
+        val card: CardDto? = null,
     ) : ChatEvent
     data class Done(val aborted: Boolean) : ChatEvent
     data class Failure(val code: String) : ChatEvent
 }
+
+// Generative UI card (issue #16) — mirrors lib/chat/generative.ts. The server
+// already validated the envelope; malformed payloads never reach this shape
+// (the parser degrades them to null).
+@Serializable
+data class CardFieldDto(val label: String, val value: String = "")
+
+@Serializable
+data class CardLinkDto(val label: String, val url: String)
+
+@Serializable
+data class CardDto(
+    val kind: String = "info",
+    val title: String,
+    val body: String? = null,
+    val fields: List<CardFieldDto>? = null,
+    val links: List<CardLinkDto>? = null,
+)
 
 // Admin MCP API (GET /api/admin/mcp), mirrors components/settings/mcp-card.tsx.
 // `headers` values arrive pre-masked from the server (never the real secrets).
@@ -136,6 +159,8 @@ data class McpServerDto(
 data class McpAdminDto(
     val mcpEnabled: Boolean = false,
     val userPrivateUrls: Boolean = false,
+    // Admin guardrail for user-owned MCP servers (mcp.userServersEnabled).
+    val userServersEnabled: Boolean = false,
     val servers: List<McpServerDto> = emptyList(),
 )
 

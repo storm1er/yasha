@@ -78,6 +78,7 @@
     <string name="mutations_off">Les mutations sont désactivées sur ce serveur</string>
     <string name="key_limit_error">Vous avez déjà 20 clés actives. Révoquez-en une d\'abord.</string>
     <string name="refresh">Actualiser</string>
+    <string name="retry">Réessayer</string>
     <string name="loading">Chargement…</string>
     <string name="no_results">Aucun résultat.</string>
     <string name="api_card_title">API</string>
@@ -288,4 +289,22 @@
 <string name="caption_pending">Transcription…</string>
 <string name="caption_failed">Échec de la transcription.</string>
 <string name="caption_retry">Réessayer</string>
+    <string name="appearance_title">Apparence</string>
+    <string name="appearance_intro">Thème de cet appareil uniquement — jamais stocké sur le compte.</string>
+    <string name="theme_system">Système</string>
+    <string name="theme_light">Clair</string>
+    <string name="theme_dark">Sombre</string>
+    <string name="sessions_title">Sessions actives</string>
+    <string name="sessions_intro">Appareils connectés à votre compte. Révoquez tout appareil inconnu.</string>
+    <string name="sessions_current">actuelle</string>
+    <string name="sessions_revoke">Révoquer</string>
+    <string name="sessions_revoke_others">Déconnecter les autres appareils</string>
+    <string name="sessions_empty">Aucune session à vérifier.</string>
+    <string name="sessions_unknown_device">Appareil inconnu</string>
+    <string name="admin_mcp_user_servers">Autoriser les serveurs MCP personnels des utilisateurs</string>
+    <string name="chat_tool_result_max">Résultat d\'outil max (car.)</string>
+    <string name="tune_dream_deadline">Délai de rêverie (s)</string>
+    <string name="tune_dream_chunk">Taille de segment de rêverie</string>
+    <string name="tune_dream_insights">Inférences par nuit</string>
+    <string name="tune_dream_rebuild">Reconstruction du profil (nuits)</string>
 </resources>

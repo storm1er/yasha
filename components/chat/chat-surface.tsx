@@ -25,6 +25,7 @@ import {
   type ToolChip,
   type YashaUIMessage,
 } from "@/lib/chat/ui-messages";
+import type { GenerativeCard } from "@/lib/chat/generative";
 import { useAudioConfig } from "@/lib/browser/use-audio-input";
 import type { ModelCapabilities } from "@/components/chat/model-picker";
 import { Button } from "@/components/ui/button";
@@ -85,6 +86,50 @@ function ToolSegments({
   );
 }
 
+// Generative UI card (issue #16, Milestone 1): display-only structure emitted
+// by a tool result envelope (lib/chat/generative.ts). All text is tool data —
+// no new i18n strings; body renders as plain text (no markdown injection).
+function GenerativeCardView({ card }: { card: GenerativeCard }) {
+  return (
+    <div
+      data-testid={`generative-card-${card.kind}`}
+      className="mt-1 w-[min(420px,80vw)] min-w-0 rounded-xl border bg-card p-3 shadow-sm"
+    >
+      <div className="text-sm font-medium">{card.title}</div>
+      {card.body && (
+        <p className="mt-1 whitespace-pre-wrap break-words text-[13px] text-muted-foreground">
+          {card.body}
+        </p>
+      )}
+      {card.fields && card.fields.length > 0 && (
+        <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[13px]">
+          {card.fields.map((f, i) => (
+            <div key={i} className="contents">
+              <dt className="text-muted-foreground">{f.label}</dt>
+              <dd className="break-words">{f.value}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {card.links && card.links.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {card.links.map((l, i) => (
+            <a
+              key={i}
+              href={l.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded-full border px-2 py-0.5 text-xs text-primary transition-colors hover:bg-muted"
+            >
+              {l.label}
+            </a>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ToolChipView({ tool, label }: { tool: ToolChip; label: string }) {
   const t = useTranslations("chat");
   const [open, setOpen] = useState(false);
@@ -124,6 +169,7 @@ function ToolChipView({ tool, label }: { tool: ToolChip; label: string }) {
           />
         )}
       </button>
+      {tool.card && <GenerativeCardView card={tool.card} />}
       {open && expandable && (
         <div className="mt-1 w-[min(420px,80vw)] min-w-0 rounded-xl border bg-muted/50 p-2 text-xs">
           <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">

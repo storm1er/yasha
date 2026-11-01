@@ -66,6 +66,15 @@ object ChatEvents {
                         args = tool["args"]?.jsonPrimitive?.contentOrNull,
                         result = tool["result"]?.jsonPrimitive?.contentOrNull,
                         truncated = tool["truncated"]?.jsonPrimitive?.booleanOrNull == true,
+                        // Issue #16: validated server-side, but decode defensively —
+                        // an unexpected shape degrades to a plain chip.
+                        card = (tool["card"] as? JsonObject)?.let { c ->
+                            try {
+                                json.decodeFromJsonElement(CardDto.serializer(), c)
+                            } catch (_: Exception) {
+                                null
+                            }
+                        },
                     )
                 }
                 else -> null // start / text-start / text-end / finish / sources: no app effect
@@ -82,7 +91,7 @@ sealed interface ApiResult<out T> {
     data class Err(val code: String) : ApiResult<Nothing>
 }
 
-class YashaClient(private val store: SessionStore) : YashaApi {
+class YashaClient(private val store: SessionStore) : YashaApi, YashaChatApi {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; explicitNulls = false }
     private val http = OkHttpClient.Builder()
         .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
@@ -113,7 +122,7 @@ class YashaClient(private val store: SessionStore) : YashaApi {
     // (same dispatch as the web login form). The session token comes back as
     // Set-Cookie (no CSRF needed: no browser Origin header — verified against
     // the live server).
-    suspend fun signIn(identifier: String, password: String): ApiResult<Unit> = withContext(Dispatchers.IO) {
+    override suspend fun signIn(identifier: String, password: String): ApiResult<Unit> = withContext(Dispatchers.IO) {
         val isEmail = EMAIL_SHAPE.matches(identifier)
         val body = buildJsonObject {
             put(if (isEmail) "email" else "username", identifier)
@@ -140,22 +149,27 @@ class YashaClient(private val store: SessionStore) : YashaApi {
         }
     }
 
-    suspend fun signOut() {
+    override suspend fun signOut() {
         call(endpoints().signOut) { post(ByteArray(0).toRequestBody(null)) }
         store.clearSession()
     }
 
-    suspend fun probeSession(): Boolean =
-        call(endpoints().session).let { it is ApiResult.Ok && it.value.contains("\"session\"") }
+    // Issue #14: tri-state on purpose. Only a server-confirmed sign-out (401
+    // or a 200 body without a session) is `Invalid`; anything else — airplane
+    // mode, DNS, timeout, 5xx — is `Unreachable` and must keep the token.
+    override suspend fun probeSession(): SessionProbe = when (val r = call(endpoints().session)) {
+        is ApiResult.Ok -> if (r.value.contains("\"session\"")) SessionProbe.Valid else SessionProbe.Invalid
+        is ApiResult.Err -> if (r.code == "unauthorized") SessionProbe.Invalid else SessionProbe.Unreachable
+    }
 
-    suspend fun fetchModels(): ApiResult<ModelsDto> = decode(call(endpoints().models)) { json.decodeFromString<ModelsDto>(it) }
+    override suspend fun fetchModels(): ApiResult<ModelsDto> = decode(call(endpoints().models)) { json.decodeFromString<ModelsDto>(it) }
 
-    suspend fun listThreads(): ApiResult<List<ThreadRowDto>> = decode(call(endpoints().threads)) { json.decodeFromString<ThreadsDto>(it).threads }
+    override suspend fun listThreads(): ApiResult<List<ThreadRowDto>> = decode(call(endpoints().threads)) { json.decodeFromString<ThreadsDto>(it).threads }
 
-    suspend fun openThread(id: String): ApiResult<ThreadDetailDto> =
+    override suspend fun openThread(id: String): ApiResult<ThreadDetailDto> =
         decode(call("${endpoints().threads}/$id")) { json.decodeFromString<ThreadDetailDto>(it) }
 
-    suspend fun deleteThread(id: String): ApiResult<Unit> =
+    override suspend fun deleteThread(id: String): ApiResult<Unit> =
         decode(call("${endpoints().threads}/$id") { delete() }) { }
 
     // Generic JSON passthrough for the settings screens (paths mirror app/api/*).
@@ -177,17 +191,17 @@ class YashaClient(private val store: SessionStore) : YashaApi {
         call(endpoints().base + path) { delete() }
 
     // Audio input (AUDIO-REFACTO-PLAN): feature config + caption retry.
-    suspend fun audioConfig(): ApiResult<AudioConfigDto> =
+    override suspend fun audioConfig(): ApiResult<AudioConfigDto> =
         decode(call(endpoints().audioConfig)) { json.decodeFromString<AudioConfigDto>(it) }
 
-    suspend fun retryTranscribe(messageId: String): ApiResult<Boolean> =
+    override suspend fun retryTranscribe(messageId: String): ApiResult<Boolean> =
         decode(call(endpoints().messageTranscribe(messageId)) {
             post(ByteArray(0).toRequestBody("application/json".toMediaType()))
         }) { json.decodeFromString<TranscribeQueuedDto>(it).queued }
 
     // POST /api/chat, SSE-framed events mapped to ChatEvent. Cancelling the
     // collected flow cancels the HTTP call (server persists the partial turn).
-    fun chatStream(body: ChatRequestBody): Flow<ChatEvent> = callbackFlow {
+    override fun chatStream(body: ChatRequestBody): Flow<ChatEvent> = callbackFlow {
         val request = requestBuilder(endpoints().chat)
             .header("Content-Type", "application/json")
             .header("Accept", "text/event-stream")

@@ -86,6 +86,39 @@ class ChatEventsTest {
     }
 
     @Test
+    fun `tool progress carries the generative card (issue 16)`() {
+        assertEquals(
+            ChatEvent.ToolProgress(
+                "ketch", "weather", "done",
+                card = CardDto(
+                    kind = "weather",
+                    title = "Nice day",
+                    body = "Sunny",
+                    fields = listOf(CardFieldDto("Wind", "12 km/h")),
+                    links = listOf(CardLinkDto("Radar", "https://example.com/radar")),
+                ),
+            ),
+            ChatEvents.parse(
+                """{"type":"data-tool","data":{"server":"ketch","name":"weather","status":"done","card":{
+                    "kind":"weather","title":"Nice day","body":"Sunny",
+                    "fields":[{"label":"Wind","value":"12 km/h"}],
+                    "links":[{"label":"Radar","url":"https://example.com/radar"}]}}}""",
+            ),
+        )
+        // Defaults: kind falls back to info; no card = null (old servers).
+        val minimal = ChatEvents.parse(
+            """{"type":"data-tool","data":{"server":"k","name":"n","status":"done","card":{"title":"T"}}}""",
+        ) as ChatEvent.ToolProgress
+        assertEquals(CardDto(kind = "info", title = "T"), minimal.card)
+        assertNull((ChatEvents.parse("""{"type":"data-tool","data":{"server":"k","name":"n","status":"done"}}""") as ChatEvent.ToolProgress).card)
+        // A card without the required title degrades to a plain chip.
+        val broken = ChatEvents.parse(
+            """{"type":"data-tool","data":{"server":"k","name":"n","status":"done","card":{"body":"oops"}}}""",
+        ) as ChatEvent.ToolProgress
+        assertNull(broken.card)
+    }
+
+    @Test
     fun `garbage and malformed data parts map to null`() {
         assertNull(ChatEvents.parse("not json"))
         assertNull(ChatEvents.parse("[1,2]"))
