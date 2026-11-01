@@ -19,6 +19,7 @@ PLAN.md
 plan.md
 docs/*
 !docs/architecture.md
+!docs/protocol-v3.md
 !docs/configuration.md
 !docs/admin-guide.md
 !docs/images/
