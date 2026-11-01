@@ -88,7 +88,7 @@ import androidx.compose.ui.unit.dp
 import com.yasha.assist.core.capture.AttachmentEncoder
 import com.yasha.assist.core.markdown.YashaMarkdown
 import com.yasha.assist.core.net.ChatEvent
-import com.yasha.assist.core.net.ChatRequestBody
+import com.yasha.assist.core.net.chatRequestBody
 import com.yasha.assist.core.net.YashaClient
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -333,8 +333,8 @@ fun FloatyScreen(onDismiss: () -> Unit) {
                 try {
                     launch { while (isActive) { delay(150); flush() } }
                     client.chatStream(
-                        ChatRequestBody(
-                            message = text,
+                        chatRequestBody(
+                            text = text,
                             threadId = threadId,
                             attachments = if (urls.isEmpty() && audioUrl == null) {
                                 null

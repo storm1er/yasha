@@ -202,6 +202,19 @@ describe("POST /api/chat (protocol v3 behavior)", () => {
     await drainUi(res);
   });
 
+  it("existing thread with NO echoed history — the Android minimal window (P4)", async () => {
+    const mock = mockOk();
+    seedThread("th-a");
+    seedMessage("q1", "th-a", "user", "first question");
+    seedMessage("a1", "th-a", "assistant", "answer");
+    const res = await post({ id: "th-a", messages: [{ id: "u-min", role: "user", parts: turn("follow-up") }] });
+    expect(res.status).toBe(200);
+    await drainUi(res);
+    // Model input is still rebuilt from the stored window (transport, not truth).
+    const upstream = (JSON.parse(mock.lastCall(CHAT)!.body!) as { messages: unknown[] }).messages;
+    expect(JSON.stringify(upstream)).toContain("first question");
+  });
+
   it("stored content wins over echoed content (transport, not truth)", async () => {
     const mock = mockOk();
     seedThread("th-a");

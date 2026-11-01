@@ -32,12 +32,46 @@ data class ChatAttachments(
     val audio: String? = null,
 )
 
+// Protocol v3 request (docs/protocol-v3.md): the stock useChat body. The app
+// sends a minimal valid window — just the new user turn with a client id the
+// server persists verbatim. Older history is NOT echoed: the server rebuilds
+// model input from its own rows, and any user-role echo that didn't come from
+// a loaded thread would be a 409. `interactive=false` is the surface flag:
+// the app cannot answer interactive tool cards yet, so the server never
+// issues them on these requests.
+@Serializable
+data class OutgoingPart(val type: String, val text: String)
+
+@Serializable
+data class OutgoingMessage(val id: String, val role: String, val parts: List<OutgoingPart>)
+
 @Serializable
 data class ChatRequestBody(
-    val message: String,
-    val threadId: String? = null,
+    val id: String,
+    val messages: List<OutgoingMessage>,
     val model: String? = null,
     val attachments: ChatAttachments? = null,
+    val interactive: Boolean = false,
+)
+
+/** v3 body factory: fresh client id per send attempt (the route's same-turn
+ * dedupe handles retries of a failed identical turn). */
+fun chatRequestBody(
+    text: String,
+    threadId: String?,
+    model: String? = null,
+    attachments: ChatAttachments? = null,
+): ChatRequestBody = ChatRequestBody(
+    id = threadId ?: "new",
+    messages = listOf(
+        OutgoingMessage(
+            id = java.util.UUID.randomUUID().toString(),
+            role = "user",
+            parts = listOf(OutgoingPart(type = "text", text = text)),
+        ),
+    ),
+    model = model,
+    attachments = attachments,
 )
 
 // Maps one SSE payload JSON to a ChatEvent (pure — unit-tested). Protocol v2

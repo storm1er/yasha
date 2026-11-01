@@ -10,7 +10,7 @@ import com.yasha.assist.core.audio.VadRecorderController
 import com.yasha.assist.core.capture.AttachmentEncoder
 import com.yasha.assist.core.net.ChatAttachments
 import com.yasha.assist.core.net.ChatEvent
-import com.yasha.assist.core.net.ChatRequestBody
+import com.yasha.assist.core.net.chatRequestBody
 import com.yasha.assist.core.net.ModelDto
 import com.yasha.assist.core.net.ApiResult
 import com.yasha.assist.core.net.CardDto
@@ -432,8 +432,8 @@ class ChatViewModel(
         var failed = false
         streamJob = scope.launch {
             client.chatStream(
-                ChatRequestBody(
-                    message = text,
+                chatRequestBody(
+                    text = text,
                     threadId = s.threadId,
                     model = s.pickedModel ?: s.defaultModel,
                     attachments = if (images.isEmpty() && audioUrl == null) {

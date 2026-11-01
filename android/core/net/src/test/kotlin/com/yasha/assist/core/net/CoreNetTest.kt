@@ -207,17 +207,31 @@ class AudioDtoTest {
     }
 
     @Test
-    fun `chat body serializes the attachments object and omits nulls`() {
-        val body = ChatRequestBody(
-            message = "hi",
+    fun `chat body serializes protocol v3 (docs-slash-protocol-v3) minimal window`() {
+        val body = chatRequestBody(
+            text = "hi",
+            threadId = null,
             attachments = ChatAttachments(images = listOf("data:image/png;base64,AAA"), audio = "data:audio/wav;base64,BBB"),
         )
         val out = Json { encodeDefaults = true; explicitNulls = false }
             .encodeToString(ChatRequestBody.serializer(), body)
+        // Thread slot + single client-id'd user turn; no v2 keys leak.
+        assertTrue(out.contains("\"id\":\"new\""))
+        assertTrue(out.contains("\"role\":\"user\""))
+        assertTrue(out.contains("\"parts\":[{\"type\":\"text\",\"text\":\"hi\"}]"))
+        assertTrue(Regex("\"messages\":\\[\\{\"id\":\"[0-9a-fA-F-]{36}\"").containsMatchIn(out))
+        assertTrue(out.contains("\"interactive\":false"))
         assertTrue(out.contains("\"images\":[\"data:image/png;base64,AAA\"]"))
         assertTrue(out.contains("\"audio\":\"data:audio/wav;base64,BBB\""))
         assertTrue(!out.contains("threadId"))
-        assertTrue(!out.contains("model"))
+        assertTrue(!out.contains("\"message\""))
+        assertTrue(!out.contains("\"model\""))
+        // Existing thread → its id in the same slot.
+        val onThread = chatRequestBody(text = "", threadId = "th-9")
+        val outThread = Json { encodeDefaults = true; explicitNulls = false }
+            .encodeToString(ChatRequestBody.serializer(), onThread)
+        assertTrue(outThread.contains("\"id\":\"th-9\""))
+        assertTrue(outThread.contains("\"text\":\"\"")) // audio-only turn: empty text part
     }
 }
 
