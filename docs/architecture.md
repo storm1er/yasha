@@ -40,6 +40,9 @@ How Yasha works internally. Product-level description lives in the [README](../R
 ## Request flows
 
 ### Chat turn (web UI)
+
+> Protocol direction: issue #21 adopts the stock AI SDK request contract (protocol **v3**,
+> `docs/protocol-v3.md`); the response stream below is unchanged by it.
 1. `POST /api/chat` — auth via better-auth session cookie; attachments (images/audio) are
    validated/stored beforehand under `/data`. The client is the AI SDK's `useChat`
    (`@ai-sdk/react`): the wire body carries only the new user turn + thread/model/attachments
