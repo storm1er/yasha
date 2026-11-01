@@ -8,6 +8,7 @@ import { db, setFastModel, setSetting, rawSqlite } from "./support/db";
 import { clearModels, seedModel } from "./support/catalog";
 import { invalidateSettingsCache } from "@/lib/settings";
 import { callRoute, signUp, waitFor, type TestUser } from "./support/app";
+import { v3Body } from "./support/v3";
 import { mockLemonade, sseChatCompletion, type LemonadeMock } from "./support/lemonade";
 import { jobs, messages, threads } from "@/lib/db/schema";
 import { VOICE_MESSAGE_MARKER } from "@/lib/audio-input";
@@ -29,7 +30,7 @@ function eventCfg(over: Record<string, unknown> = {}): string {
 }
 
 async function postChat(json: Record<string, unknown>) {
-  return callRoute(chatRoute.POST, { method: "POST", path: "/api/chat", cookie: user.cookie, json });
+  return callRoute(chatRoute.POST, { method: "POST", path: "/api/chat", cookie: user.cookie, json: v3Body(json) });
 }
 
 function captionJobs() {

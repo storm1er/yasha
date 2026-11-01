@@ -235,9 +235,10 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
     selectedModelRef.current = id;
   }, []);
 
-  // Server-authoritative transport (D1): the wire body carries ONLY the new
-  // user turn (+ thread, model, attachments) — history lives in the DB and
-  // the response is protocol v2 (lib/chat/stream.ts).
+  // Protocol v3 transport (docs/protocol-v3.md): the stock useChat body —
+  // thread id + the full client window — with model/attachments appended as
+  // extra fields. History is transport only: the server reconciles ids and
+  // hydrates content from its own rows (lib/chat/request-v3.ts).
   const transport = useMemo(
     () =>
       new DefaultChatTransport<YashaUIMessage>({
@@ -247,9 +248,11 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
             if (res.status === 401) router.replace("/login");
             return res;
           }),
-        // The real body is assembled per send (see send()) and arrives via
-        // ChatRequestOptions.body — the transport itself stays stateless.
-        prepareSendMessagesRequest: ({ body }) => ({ body: body ?? {} }),
+        // Assembled per send: id + extras come from send() (ChatRequestOptions
+        // .body), the window from useChat's own state.
+        prepareSendMessagesRequest: ({ messages, body }) => ({
+          body: { messages, ...(body ?? {}) },
+        }),
       }),
     [router]
   );
@@ -450,9 +453,10 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
       const meta: ChatMessageMeta = {};
       if (imgs) meta.images = imgs;
       if (audio) meta.audio = audio;
-      // v1 wire body: { threadId, message, model?, attachments? } — built at
-      // send time (server rebuilds the history itself).
-      const body: Record<string, unknown> = { threadId: threadIdRef.current, message: text };
+      // v3 body extras — id (thread adoption rewrites the ref mid-session) +
+      // attachments/model; the transport appends the useChat window (which
+      // already carries this turn's text message) to form the standard body.
+      const body: Record<string, unknown> = { id: threadIdRef.current ?? "new" };
       if (imgs || audio) {
         const sendAttachments: Record<string, unknown> = {};
         if (imgs) sendAttachments.images = imgs;

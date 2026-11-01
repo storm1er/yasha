@@ -29,6 +29,7 @@ import {
   type TestUser,
 } from "./support/app";
 import { db } from "./support/db";
+import { v3Body } from "./support/v3";
 import { resetHealthProbes } from "@/lib/provider/health";
 import { json, mockLemonade, sseChatCompletion } from "./support/lemonade";
 
@@ -55,7 +56,7 @@ describe("zero wired providers (Q22 soft state)", () => {
       method: "POST",
       path: "/api/chat",
       cookie: user.cookie,
-      json: { message: "hello" },
+      json: v3Body({ message: "hello" }),
     });
     expect(res.status).toBe(503);
     expect(await jsonOf(res)).toEqual({ error: "no_backend" });
@@ -217,7 +218,7 @@ describe("provider without a control plane answers 501 (Q10)", () => {
       method: "POST",
       path: "/api/chat",
       cookie: user.cookie,
-      json: { message: "hello" },
+      json: v3Body({ message: "hello" }),
     });
     expect(res.status).toBe(400);
     expect(await jsonOf(res)).toEqual({ error: "no_model_configured" });
@@ -244,7 +245,7 @@ describe("multi-provider chat routing (M2b catalog)", () => {
       method: "POST",
       path: "/api/chat",
       cookie: user.cookie,
-      json: { message: "hello", model: "beta:b-model" },
+      json: v3Body({ message: "hello", model: "beta:b-model" }),
     });
     expect(res.status).toBe(200);
     await res.text();

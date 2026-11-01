@@ -14,6 +14,7 @@ import { ensureReady } from "@/lib/db";
 import { setUserMcpEnabled } from "@/lib/mcp/prefs";
 import { db, setFastModel, setSetting } from "./support/db";
 import { callRoute, makeRequest, sessionId, signUp, waitFor, type TestUser } from "./support/app";
+import { v3Body } from "./support/v3";
 import { mockLemonade, sseChatCompletion, streamResponse } from "./support/lemonade";
 import { drainUi, uiData, uiErrorCode, uiText, uiThread, type UiChunk } from "./support/ui-stream";
 import { setCurrentHeaders } from "./support/request-context";
@@ -107,7 +108,7 @@ async function post(json: Record<string, unknown>) {
     method: "POST",
     path: "/api/chat",
     cookie: user.cookie,
-    json: { message: "hi", ...json },
+    json: v3Body({ message: "hi", ...json }),
   });
 }
 
@@ -518,7 +519,7 @@ describe("chat loop (MCP tools → AI SDK rounds)", () => {
       method: "POST",
       path: "/api/chat",
       cookie: user.cookie,
-      json: { message: "go" },
+      json: v3Body({ message: "go" }),
       signal: ac.signal,
     });
     setCurrentHeaders(req.headers);
