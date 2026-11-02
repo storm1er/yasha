@@ -12,6 +12,7 @@ import { useChat } from "@ai-sdk/react";
 import { Sparkle } from "@/components/brand/sparkle";
 import { useChatShell } from "@/components/chat/chat-shell";
 import { CodeBlock } from "@/components/chat/code-block";
+import { GenUiCardView } from "@/components/chat/gen-ui";
 import { Composer, type ComposerAttachment } from "@/components/chat/composer";
 import {
   captionPending,
@@ -75,6 +76,8 @@ function ToolSegments({
       {segments.map((seg, i) =>
         seg.kind === "tools" ? (
           <ToolChipRow key={`tools-${i}`} tools={seg.tools} label={label} />
+        ) : seg.kind === "card" ? (
+          <GenUiCardView key={seg.card.id} card={seg.card} />
         ) : (
           <div key={`text-${i}`} className="md text-[15px]">
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>

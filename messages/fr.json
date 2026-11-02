@@ -73,6 +73,8 @@
     "askConfirm": "Confirmer",
     "askCancel": "Annuler",
     "askAnswered": "Réponse donnée : {answer}",
+    "genUiPrev": "Diapositive précédente",
+    "genUiNext": "Diapositive suivante",
     "scrollToBottom": "Défiler vers le bas",
     "thinking": "Réflexion…",
     "model": "Modèle",

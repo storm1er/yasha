@@ -401,3 +401,91 @@ describe("projectMessages — interactive asks", () => {
     expect(m.interactive?.[2]?.answered).toBe("null");
   });
 });
+
+// ── tier-1 generative UI cards (issue #28) ──────────────────────────────────
+
+const renderCard = (id: string) => ({ id, root: { type: "text" as const, text: `card ${id}` } });
+const cardPart = (id: string) => ({ type: "data-card" as const, data: renderCard(id) });
+
+describe("storedToUiMessages — generative cards", () => {
+  it("meta.parts card entries splice meta.cards between the text parts", () => {
+    const [m] = storedToUiMessages([
+      {
+        id: "a-card",
+        role: "assistant",
+        content: "AB",
+        meta: {
+          cards: [renderCard("c1")],
+          parts: [
+            { type: "text", text: "A" },
+            { type: "card" },
+            { type: "text", text: "B" },
+          ],
+        },
+      },
+    ]);
+    expect(m.parts).toEqual([text("A"), cardPart("c1"), text("B")]);
+  });
+
+  it("parts without card entries (legacy/mismatch) → fallback appends the cards last", () => {
+    const [m] = storedToUiMessages([
+      {
+        id: "a-card-mismatch",
+        role: "assistant",
+        content: "AB",
+        meta: { cards: [renderCard("c1")], parts: [{ type: "text", text: "A" }] },
+      },
+    ]);
+    expect(m.parts).toEqual([text("AB"), cardPart("c1")]);
+  });
+
+  it("card entry with no backing meta.cards record → fallback", () => {
+    const [m] = storedToUiMessages([
+      {
+        id: "a-card-orphan",
+        role: "assistant",
+        content: "AB",
+        meta: { parts: [{ type: "text", text: "A" }, { type: "card" }, { type: "text", text: "B" }] },
+      },
+    ]);
+    expect(m.parts).toEqual([text("AB")]);
+  });
+
+  it("malformed stored cards are dropped (never rendered half-valid)", () => {
+    const [m] = storedToUiMessages([
+      {
+        id: "a-card-junk",
+        role: "assistant",
+        content: "",
+        meta: {
+          cards: [
+            { id: 7, root: { type: "text", text: "x" } }, // id must be a string
+            { id: "c2", root: { type: "nope" } }, // unknown component
+          ],
+        },
+      },
+    ]);
+    expect(m.parts).toEqual([]);
+  });
+});
+
+describe("projectMessages — generative cards", () => {
+  it("data-card parts render as card segments, in order with the text", () => {
+    const [m] = projectMessages(
+      [msg({ role: "assistant", parts: [text("before "), cardPart("c1"), text("after"), cardPart("c2")] })],
+      false
+    );
+    expect(m.segments).toEqual([
+      { kind: "text", text: "before " },
+      { kind: "card", card: renderCard("c1") },
+      { kind: "text", text: "after" },
+      { kind: "card", card: renderCard("c2") },
+    ]);
+  });
+
+  it("a card with no text is still a visible turn", () => {
+    const [m] = projectMessages([msg({ role: "assistant", parts: [cardPart("c1")] })], false);
+    expect(m).toMatchObject({ role: "assistant", content: "" });
+    expect(m.segments).toEqual([{ kind: "card", card: renderCard("c1") }]);
+  });
+});

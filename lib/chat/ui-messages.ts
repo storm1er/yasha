@@ -15,6 +15,7 @@
 
 import type { TextUIPart, UIMessage } from "ai";
 import { parseGenerativeCard, type GenerativeCard } from "@/lib/chat/generative";
+import { parseStoredCards, type RenderedCard } from "@/lib/chat/render-ui";
 
 export type ToolChip = {
   server: string;
@@ -32,10 +33,12 @@ export type ToolChip = {
 };
 
 /** Ordered rendering segment of an assistant turn (issue #7): tool chips
- *  interleaved with the surrounding text in execution order. */
+ *  interleaved with the surrounding text in execution order; `card` is a
+ *  tier-1 generative-UI card (issue #28) rendered inline. */
 export type MessageSegment =
   | { kind: "text"; text: string }
-  | { kind: "tools"; tools: ToolChip[] };
+  | { kind: "tools"; tools: ToolChip[] }
+  | { kind: "card"; card: RenderedCard };
 
 export type ChatMessage = {
   id: string;
@@ -79,6 +82,7 @@ export type ChatMessageMeta = {
 export type YashaDataParts = {
   thread: { threadId: string };
   tool: ToolChip;
+  card: RenderedCard;
   error: { code: string };
 };
 
@@ -208,10 +212,12 @@ function storedChips(tools: unknown): ToolChip[] {
 function partsFromStoredMeta(
   rawParts: unknown,
   chips: ToolChip[],
+  cards: RenderedCard[],
 ): YashaUIMessage["parts"] | undefined {
   if (!Array.isArray(rawParts)) return undefined;
   const out: YashaUIMessage["parts"] = [];
   let i = 0;
+  let c = 0;
   for (const entry of rawParts) {
     if (!entry || typeof entry !== "object") return undefined;
     const part = entry as { type?: unknown; text?: unknown; count?: unknown };
@@ -226,11 +232,14 @@ function partsFromStoredMeta(
       if (n < 0 || i + n > chips.length) return undefined;
       for (const chip of chips.slice(i, i + n)) out.push({ type: "data-tool", data: chip });
       i += n;
+    } else if (part.type === "card") {
+      if (c >= cards.length) return undefined;
+      out.push({ type: "data-card", data: cards[c++] });
     } else {
       return undefined;
     }
   }
-  return i === chips.length ? out : undefined;
+  return i === chips.length && c === cards.length ? out : undefined;
 }
 
 /** Thread rows → UIMessages (metadata + parts) for `useChat.setMessages`. */
@@ -250,9 +259,11 @@ export function storedToUiMessages(rows: ServerMessage[]): YashaUIMessage[] {
     let parts: YashaUIMessage["parts"] = [];
     if (m.role === "assistant") {
       const chips = storedChips(meta.tools);
-      parts = partsFromStoredMeta(meta.parts, chips) ?? [
+      const cards = parseStoredCards(meta.cards);
+      parts = partsFromStoredMeta(meta.parts, chips, cards) ?? [
         ...chips.map((chip) => ({ type: "data-tool" as const, data: chip })),
         ...(m.content ? [{ type: "text" as const, text: m.content }] : []),
+        ...cards.map((card) => ({ type: "data-card" as const, data: card })),
       ];
     } else if (m.content) {
       parts = [{ type: "text", text: m.content }];
@@ -293,6 +304,7 @@ export function projectMessages(messages: YashaUIMessage[], streaming: boolean):
     const tools: ToolChip[] = [];
     const segments: MessageSegment[] = [];
     const asks: InteractiveAsk[] = [];
+    let cardsShown = 0;
     for (const part of m.parts) {
       if (isTextPart(part)) {
         if (part.text === "") continue;
@@ -307,6 +319,11 @@ export function projectMessages(messages: YashaUIMessage[], streaming: boolean):
       const ask = askFromPart(part);
       if (ask) {
         asks.push(ask);
+        continue;
+      }
+      if (part.type === "data-card") {
+        cardsShown += 1;
+        segments.push({ kind: "card", card: part.data });
         continue;
       }
       if (part.type !== "data-tool") continue; // data-thread/data-error: not rendered here
@@ -327,9 +344,10 @@ export function projectMessages(messages: YashaUIMessage[], streaming: boolean):
         segments.push({ kind: "tools", tools: [chip] });
       }
     }
-    // A question with no text yet is still a visible turn (the ask IS the
-    // assistant's move).
-    if (content === "" && tools.length === 0 && asks.length === 0) return; // nothing visible yet
+    // A question, a card or a chip with no text yet is still a visible turn
+    // (it IS the assistant's move).
+    if (content === "" && tools.length === 0 && asks.length === 0 && cardsShown === 0)
+      return; // nothing visible yet
     out.push({
       id: m.id,
       role: "assistant",

@@ -582,12 +582,13 @@ describe("chat loop (MCP tools → AI SDK rounds)", () => {
     const withTools = bodies[0];
     // toolChoice "auto" is the wire default — the SDK omits it when unset
     expect(withTools.tool_choice ?? "auto").toBe("auto");
-    // Interactive asks ride along (interactive defaults to true); MCP defs
-    // keep their prefixed names.
+    // Interactive asks ride along (interactive defaults to true) with the
+    // generative-UI tool; MCP defs keep their prefixed names.
     expect(withTools.tools?.map((t) => t.function.name)).toEqual([
       "mcp__ketch__search",
       "ask_choice",
       "confirm_action",
+      "render_ui",
     ]);
     expect(withTools.tools?.[0]).toMatchObject({ type: "function", function: { name: "mcp__ketch__search" } });
   });
@@ -635,6 +636,19 @@ describe("mcp loop helpers", () => {
       { type: "tools", count: 2 },
       { type: "tools", count: 1 },
       { type: "text", text: "b" },
+    ]);
+  });
+
+  it("createTurnParts interleaves cards (issue #28)", () => {
+    const t = createTurnParts();
+    t.onCard(); // card with no surrounding text: parts open with the card
+    t.onText("after");
+    expect(t.parts()).toEqual([{ type: "card" }, { type: "text", text: "after" }]);
+    t.onToolRound(1);
+    expect(t.parts()).toEqual([
+      { type: "card" },
+      { type: "text", text: "after" },
+      { type: "tools", count: 1 },
     ]);
   });
 

@@ -14,6 +14,7 @@ tests use the same fixtures).
 | P1 request contract (parse, reconcile, id idempotency, `interactive`) | shipped | `lib/chat/request-v3.ts` |
 | P2 pending-actions gate | shipped | `pending_actions` table, `lib/chat/interactive.ts` |
 | P3 interactive tools (`ask_choice`/`confirm_action`) + resume | shipped | web renders + answers; Android sends `interactive: false` |
+| Tier-1 generative UI `render_ui` (issue #28) | shipped | `data-card` chunk + `meta.cards`; web-only (gated by `interactive`), see §Response |
 | P3 resume-stream reattach | **not built** | optional; see "Resume streams" below |
 | MCP-tool **approvals** (`tool-approval-request` / `experimental_toolApprovalSecret`) | **deferred** | the gate + overlay machinery here is the substrate; `pending_actions.kind` is reserved. The SDK's per-request message-sequence approval contract doesn't compose with the DB-hydration loop yet — tracked as a follow-up on #21 |
 
@@ -71,8 +72,18 @@ Rules:
 ## Response (unchanged UI-message stream + v3 additions)
 
 The response remains the AI SDK UI-message stream (`createUIMessageStreamResponse`):
-`start`, `data-thread`, `text-start/delta/end`, `data-tool` (chip state machine, optional
+`start`, `data-thread`, `start-step` (step boundary — keeps answered tool parts out of the
+resumed turn's step), `text-start/delta/end`, `data-tool` (chip state machine, optional
 `card` per issue #16), `data-error {code}`, `[DONE]`. Clients must ignore unknown chunk types.
+
+**Tier-1 generative UI (issue #28, web surface only)** — the `render_ui` tool (offered when
+`interactive: true`) executes server-side: the model's component tree is validated
+(`lib/chat/render-ui.ts`: closed vocabulary, depth/node/string caps) and, if valid, streamed as
+the custom part `data-card {id, root}` and persisted flat on `meta.cards` (interleaved into the
+turn via `{type:"card"}` entries in `meta.parts`). The model receives a short receipt; invalid
+input is fed back as the tool result to self-correct. No answer flows back: no pending row, no
+resume — display-only. The vocabulary (v1): `text`, `metric`, `badge`, `progress`, `list`,
+`chart` (bar/line/area/donut), `table`, `card`, `grid`, `slides`.
 
 **P2/P3 additions (standard chunks, not custom parts)** — interactive tools stream as real SDK
 tool chunks so `useChat` exposes typed tool parts natively:

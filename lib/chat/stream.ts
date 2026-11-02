@@ -8,6 +8,8 @@
 //   data-tool   ToolEvent         live tool-chip state machine (mirrors v1);
 //               terminal events may carry `card` (issue #16 generative UI —
 //               lib/chat/generative.ts), persisted on meta.tools entries
+//   data-card   RenderedCard      tier-1 generative UI (issue #28): validated
+//               render_ui tree, persisted flat on meta.cards
 //   tool-input-start/delta/available    interactive asks (ask_choice /
 //               confirm_action) forwarded as STANDARD tool chunks; the client
 //               answers via useChat's addToolOutput (docs/protocol-v3.md)
@@ -48,6 +50,7 @@ import {
   isInteractiveToolName,
   type InteractiveToolName,
 } from "@/lib/chat/interactive";
+import { buildRenderUiTool, type GenUiNode, type RenderedCard } from "@/lib/chat/render-ui";
 
 export type ChatStreamOpts = {
   req: Request;
@@ -92,12 +95,18 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
     clientAborted: false,
   };
   const toolRecords: ToolRoundRecord[] = [];
+  // Generative UI tier 1 (issue #28): validated render_ui trees, persisted
+  // flat in meta.cards (mirrors the meta.tools flat-array convention).
+  const cardRecords: RenderedCard[] = [];
   // Execution-order interleaving of text and tool rounds (issue #7) — same
   // accumulator as v1, persisted verbatim in meta.parts.
   const turnParts = createTurnParts();
   const toolsMeta = (): Record<string, unknown> => {
     const parts = turnParts.parts();
-    return parts ? { tools: toolRecords, parts } : {};
+    return {
+      ...(parts ? { tools: toolRecords, parts } : {}),
+      ...(cardRecords.length > 0 ? { cards: cardRecords } : {}),
+    };
   };
 
   // Failed turns keep the user message and annotate its meta with the error
@@ -212,8 +221,19 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
       // Interactive asks are recorded into `toolRecords` in stream order (so
       // meta.tools, parts interleaving and the pending rows all agree).
       const interactiveToolCalls = new Set<string>();
+      // render_ui (issue #28): execute validates; a good tree rides a
+      // data-card chunk (and into meta.cards, ordered via turnParts) while the
+      // model just gets a receipt and keeps writing.
+      const renderUiTool = buildRenderUiTool({
+        onCard: (root) => {
+          const card: RenderedCard = { id: crypto.randomUUID(), root };
+          cardRecords.push(card);
+          turnParts.onCard();
+          send({ type: "data-card", data: card });
+        },
+      });
       const allTools = opts.interactive
-        ? { ...(toolLoop.tools ?? {}), ...INTERACTIVE_TOOL_DEFS }
+        ? { ...(toolLoop.tools ?? {}), ...INTERACTIVE_TOOL_DEFS, ...renderUiTool }
         : toolLoop.tools;
 
       // First-token timeout: aborts the upstream call when no delta arrives.
@@ -393,9 +413,14 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
       }
 
       if (state.errorCode) send({ type: "data-error", data: { code: state.errorCode } });
-      // An interactive ask IS output: a turn that ends on a question is not
-      // an empty response.
-      else if (!state.clientAborted && state.assistantText.length === 0 && !toolRecords.some((r) => r.client))
+      // An interactive ask or a displayed card IS output: a turn that ends on
+      // a question or a visual is not an empty response.
+      else if (
+        !state.clientAborted &&
+        state.assistantText.length === 0 &&
+        cardRecords.length === 0 &&
+        !toolRecords.some((r) => r.client)
+      )
         send({ type: "data-error", data: { code: "empty_response" } });
 
       clearTimeout(timeout);
@@ -416,7 +441,11 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
           // when the upstream stream CLOSES, so an aborted stream never has
           // ask records to persist. A question cut off mid-stream is retried
           // as a fresh turn (its answers gate 409 with nothing stored).
-        } else if (state.assistantText.length === 0 && !toolRecords.some((r) => r.client)) {
+        } else if (
+          state.assistantText.length === 0 &&
+          cardRecords.length === 0 &&
+          !toolRecords.some((r) => r.client)
+        ) {
           await markFailed("empty_response");
         } else {
           await persist({});

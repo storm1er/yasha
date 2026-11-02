@@ -73,6 +73,8 @@
     "askConfirm": "Confirm",
     "askCancel": "Cancel",
     "askAnswered": "Answered: {answer}",
+    "genUiPrev": "Previous slide",
+    "genUiNext": "Next slide",
     "scrollToBottom": "Scroll to bottom",
     "thinking": "Thinking…",
     "model": "Model",

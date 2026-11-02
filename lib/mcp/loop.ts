@@ -163,34 +163,46 @@ export async function dispatchToolCalls(
  *  / `synthesizeToolMessages` history is unchanged by this addition). */
 export type AssistantPart =
   | { type: "text"; text: string }
-  | { type: "tools"; count: number };
+  | { type: "tools"; count: number }
+  /** One `meta.cards` entry (issue #28 render_ui), consumed in order. */
+  | { type: "card" };
 
 /** Accumulates the interleaving of streamed assistant text and dispatched
  *  tool rounds for one assistant turn. */
 export function createTurnParts(): {
   onText(delta: string): void;
   onToolRound(count: number): void;
-  /** Ordered parts, or `undefined` when no tool round ran — without tool chips
-   *  there is nothing to interleave and the flat text stays the display. */
+  /** A generative-UI card displayed at this point in the turn (issue #28). */
+  onCard(): void;
+  /** Ordered parts, or `undefined` when no tool round ran and no card showed —
+   *  without interleavables the flat text stays the display. */
   parts(): AssistantPart[] | undefined;
 } {
   const parts: AssistantPart[] = [];
   let text = "";
-  let hasRound = false;
+  let hasInterleave = false;
+  const flush = () => {
+    if (text) {
+      parts.push({ type: "text", text });
+      text = "";
+    }
+  };
   return {
     onText(delta) {
       text += delta;
     },
     onToolRound(count) {
-      hasRound = true;
-      if (text) {
-        parts.push({ type: "text", text });
-        text = "";
-      }
+      hasInterleave = true;
+      flush();
       parts.push({ type: "tools", count });
     },
+    onCard() {
+      hasInterleave = true;
+      flush();
+      parts.push({ type: "card" });
+    },
     parts() {
-      if (!hasRound) return undefined;
+      if (!hasInterleave) return undefined;
       return text ? [...parts, { type: "text", text }] : [...parts];
     },
   };
