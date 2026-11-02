@@ -41,7 +41,12 @@ class MainActivity : ComponentActivity() {
         setContent {
             YashaTheme(darkOverride = ThemePrefs.darkOverride()) {
                 val vm: ChatViewModel = viewModel(
-                    factory = ChatViewModel.Factory(app.sessionStore, app.client),
+                    factory = ChatViewModel.Factory(
+                        app.sessionStore,
+                        app.client,
+                        installedVersionCode = BuildConfig.VERSION_CODE,
+                        installedVersionName = BuildConfig.VERSION_NAME,
+                    ),
                 )
                 val svm: SettingsViewModel = viewModel(
                     factory = SettingsViewModel.Factory(

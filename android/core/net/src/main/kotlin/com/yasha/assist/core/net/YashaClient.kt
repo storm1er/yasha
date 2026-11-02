@@ -240,6 +240,14 @@ class YashaClient(private val store: SessionStore) : YashaApi, YashaChatApi {
     override suspend fun audioConfig(): ApiResult<AudioConfigDto> =
         decode(call(endpoints().audioConfig)) { json.decodeFromString<AudioConfigDto>(it) }
 
+    // Effective attachment caps (issue #15): the composer behaves like the web one.
+    override suspend fun attachmentLimits(): ApiResult<AttachmentLimitsDto> =
+        decode(call(endpoints().attachmentLimits)) { json.decodeFromString<AttachmentLimitsDto>(it) }
+
+    // Update channel stamp (issue #34): public endpoint, no state change.
+    override suspend fun fetchAppVersion(): ApiResult<AppVersionDto> =
+        decode(call(endpoints().appVersion)) { json.decodeFromString<AppVersionDto>(it) }
+
     override suspend fun retryTranscribe(messageId: String): ApiResult<Boolean> =
         decode(call(endpoints().messageTranscribe(messageId)) {
             post(ByteArray(0).toRequestBody("application/json".toMediaType()))

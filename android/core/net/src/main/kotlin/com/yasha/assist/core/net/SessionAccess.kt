@@ -8,6 +8,11 @@ interface SessionAccess {
     var token: String?
     var email: String?
 
+    // Highest update versionCode the user dismissed (issue #34): re-prompts stay
+    // silenced until a strictly newer code appears. Survives sign-out (device-
+    // level annoyance control, not account data).
+    var dismissedUpdateCode: Int
+
     fun signedIn(): Boolean
 
     fun clearSession()

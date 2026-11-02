@@ -2,6 +2,8 @@ package com.yasha.assist.feature.chat
 
 import com.yasha.assist.core.audio.MicRecorder
 import com.yasha.assist.core.net.ApiResult
+import com.yasha.assist.core.net.AppVersionDto
+import com.yasha.assist.core.net.AttachmentLimitsDto
 import com.yasha.assist.core.net.AudioConfigDto
 import com.yasha.assist.core.net.ChatEvent
 import com.yasha.assist.core.net.ChatRequestBody
@@ -20,6 +22,7 @@ import kotlinx.coroutines.flow.emptyFlow
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -38,6 +41,7 @@ private class FakeStore : SessionAccess {
     override var baseUrl: String = "https://yasha.test"
     override var token: String? = "seeded-token"
     override var email: String? = "user@yasha.test"
+    override var dismissedUpdateCode: Int = 0
     var clearCount = 0
     override fun signedIn() = !token.isNullOrEmpty()
     override fun clearSession() { clearCount++; token = null }
@@ -58,6 +62,10 @@ private class FakeChatApi(probes: List<SessionProbe>) : YashaChatApi {
     override suspend fun openThread(id: String): ApiResult<ThreadDetailDto> = ApiResult.Err("not_faked")
     override suspend fun deleteThread(id: String): ApiResult<Unit> = ApiResult.Ok(Unit)
     override suspend fun audioConfig(): ApiResult<AudioConfigDto> = ApiResult.Err("not_faked")
+    var limits: ApiResult<AttachmentLimitsDto> = ApiResult.Err("not_faked")
+    override suspend fun attachmentLimits(): ApiResult<AttachmentLimitsDto> = limits
+    var appVersion: ApiResult<AppVersionDto> = ApiResult.Err("not_faked")
+    override suspend fun fetchAppVersion(): ApiResult<AppVersionDto> = appVersion
     override suspend fun retryTranscribe(messageId: String): ApiResult<Boolean> = ApiResult.Err("not_faked")
     override fun chatStream(body: ChatRequestBody): Flow<ChatEvent> = emptyFlow()
 }
@@ -166,5 +174,67 @@ class ChatViewModelSessionTest {
         assertEquals(0, api.probeCount)
         assertFalse(vm.state.value.signedIn)
         assertFalse(vm.state.value.offline)
+    }
+
+    // Issue #15: the composer mirrors the admin-configured attachment caps.
+    @Test
+    fun `refresh adopts the server attachment cap`() {
+        val api = FakeChatApi(listOf(SessionProbe.Valid))
+        api.limits = ApiResult.Ok(AttachmentLimitsDto(maxImagesPerMessage = 1, maxWindowImages = 8, maxUploadBytes = 4096))
+        val vm = newVm(FakeStore(), api)
+        vm.start()
+        vm.refresh()
+        assertEquals(1, vm.state.value.maxAttachments)
+    }
+
+    @Test
+    fun `attachment cap fetch failure keeps the client default`() {
+        val api = FakeChatApi(listOf(SessionProbe.Valid)) // limits stays Err("not_faked")
+        val vm = newVm(FakeStore(), api)
+        vm.start()
+        vm.refresh()
+        assertEquals(ChatUiState.MAX_ATTACHMENTS, vm.state.value.maxAttachments)
+    }
+
+    // Issue #34 (Phase A): update channel — banner, dismissal memory, manual check.
+    @Test
+    fun `cold start with a newer server build raises the banner`() {
+        val api = FakeChatApi(listOf(SessionProbe.Valid))
+        api.appVersion = ApiResult.Ok(AppVersionDto(versionCode = 9, versionName = "9.9.9"))
+        val vm = newVm(FakeStore(), api)
+        vm.start()
+        assertEquals("9.9.9", vm.state.value.updateVersionName)
+    }
+
+    @Test
+    fun `dismiss silences the code and a strictly newer one raises the banner again`() {
+        val store = FakeStore()
+        val api = FakeChatApi(listOf(SessionProbe.Valid))
+        api.appVersion = ApiResult.Ok(AppVersionDto(versionCode = 9, versionName = "9.9.9"))
+        val vm = newVm(store, api)
+        vm.start()
+        vm.dismissUpdate()
+        assertNull(vm.state.value.updateVersionName)
+        assertEquals(9, store.dismissedUpdateCode)
+        vm.refresh() // same code stays silenced
+        assertNull(vm.state.value.updateVersionName)
+        api.appVersion = ApiResult.Ok(AppVersionDto(versionCode = 10, versionName = "0.3.0"))
+        vm.refresh()
+        assertEquals("0.3.0", vm.state.value.updateVersionName)
+    }
+
+    @Test
+    fun `manual check reports up-to-date versus the available version`() {
+        val api = FakeChatApi(listOf(SessionProbe.Valid))
+        api.appVersion = ApiResult.Ok(AppVersionDto(versionCode = 1, versionName = "0.2.9"))
+        val vm = newVm(FakeStore(), api)
+        vm.start()
+        vm.checkForUpdates()
+        assertEquals("up_to_date", vm.state.value.updateCheckResult)
+        assertNull(vm.state.value.updateVersionName)
+        api.appVersion = ApiResult.Ok(AppVersionDto(versionCode = 4, versionName = "0.4.0"))
+        vm.checkForUpdates()
+        assertEquals("0.4.0", vm.state.value.updateCheckResult)
+        assertEquals("0.4.0", vm.state.value.updateVersionName)
     }
 }

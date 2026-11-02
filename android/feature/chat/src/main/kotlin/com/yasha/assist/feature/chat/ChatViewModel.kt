@@ -87,16 +87,31 @@ data class ChatUiState(
     val listening: Boolean = false,
     val listenSeconds: Int = 0,
     val micError: String? = null, // "mic" | "too_short" | "too_large", mapped in the UI
+    // Server-side caps fetched on refresh (issue #15 parity with the web
+    // composer); the MAX_* constants are only the pre-fetch fallback.
+    val maxAttachments: Int = MAX_ATTACHMENTS,
+    // Update channel (issue #34, Phase A): non-null ⇒ a newer build exists and
+    // was not dismissed; updateCheckResult is the inline manual-check outcome
+    // ("up_to_date" | version name | "error:<code>").
+    val installedVersionName: String = "",
+    val installedVersionCode: Int = 0,
+    val updateVersionName: String? = null,
+    val updateCheckResult: String? = null,
 
 ) {
     companion object {
         const val MAX_ATTACHMENTS = 4 // chat.maxImagesPerMessage default
+        const val MAX_UPLOAD_BYTES = 20L * 1024 * 1024 // chat.maxUploadBytes default
     }
 }
 
 class ChatViewModel(
     private val store: SessionAccess,
     private val client: YashaChatApi,
+    // Update channel (issue #34): the app's own stamp, injected so JVM tests
+    // control the comparison; MainActivity passes BuildConfig.
+    private val installedVersionCode: Int = 1,
+    private val installedVersionName: String = "",
     private val recorderFactory: (onLevel: (rms: Double) -> Unit) -> MicRecorder =
         { level -> AudioRecorder(levelListener = level) },
     // Reconnect cadence while offline; a fake suspension hook in tests.
@@ -106,7 +121,9 @@ class ChatViewModel(
     // Settings VM pattern: tests inject an explicit scope so viewModelScope
     // (Main dispatcher) is never touched on the JVM.
     private val scope: CoroutineScope = testScope ?: viewModelScope
-    private val _state = MutableStateFlow(ChatUiState())
+    private val _state = MutableStateFlow(
+        ChatUiState(installedVersionName = installedVersionName, installedVersionCode = installedVersionCode),
+    )
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
     private var streamJob: Job? = null
@@ -225,13 +242,62 @@ class ChatViewModel(
                 }
                 is ApiResult.Err -> _state.update { it.copy(audioEnabled = false) }
             }
+            // Admin-configured attachment caps; an error keeps the client defaults
+            // (same posture as the web composer).
+            when (val r = client.attachmentLimits()) {
+                is ApiResult.Ok -> {
+                    attachmentMaxFileBytes = r.value.maxUploadBytes
+                    _state.update { it.copy(maxAttachments = r.value.maxImagesPerMessage.coerceAtLeast(0)) }
+                }
+                is ApiResult.Err -> Unit
+            }
+            // Update channel (issue #34): silent auto-check per entry, banner only.
+            checkVersion(manual = false)
         }
+    }
+
+    // ---- Update channel (issue #34, Phase A) --------------------------------
+    // "Newer" = server's build stamp above ours AND above the code the user
+    // dismissed at least once (no re-nag until a strictly newer code appears).
+    private var pendingUpdateCode: Int? = null
+
+    private suspend fun checkVersion(manual: Boolean) {
+        when (val r = client.fetchAppVersion()) {
+            is ApiResult.Ok -> {
+                val newer = r.value.versionCode > installedVersionCode
+                if (manual) {
+                    _state.update {
+                        it.copy(updateCheckResult = if (newer) r.value.versionName else "up_to_date")
+                    }
+                }
+                if (newer && r.value.versionCode > store.dismissedUpdateCode) {
+                    pendingUpdateCode = r.value.versionCode
+                    _state.update { it.copy(updateVersionName = r.value.versionName) }
+                }
+            }
+            // Public endpoint on the same host as every other call: a failure
+            // here is connectivity, never "no update". Silent on auto-check.
+            is ApiResult.Err ->
+                if (manual) _state.update { it.copy(updateCheckResult = "error:${r.code}") }
+        }
+    }
+
+    fun checkForUpdates() {
+        scope.launch { checkVersion(manual = true) }
+    }
+
+    /** "Later": silence this exact code until the server publishes a newer one. */
+    fun dismissUpdate() {
+        pendingUpdateCode?.let { store.dismissedUpdateCode = it }
+        pendingUpdateCode = null
+        _state.update { it.copy(updateVersionName = null) }
     }
 
     // ---- Voice input (AUDIO-REFACTO-PLAN §8): VAD auto-stop recording, the
     // finished WAV rides the chat request as input_audio (no transcription
     // hop). Captions arrive later from the background caption job.
     private var audioMaxDataUrlBytes = 8_388_608L
+    private var attachmentMaxFileBytes = ChatUiState.MAX_UPLOAD_BYTES
     private var lastSendHadAudio = false
     private var captionJob: Job? = null
 
@@ -399,7 +465,7 @@ class ChatViewModel(
         _state.update {
             it.copy(
                 input = text,
-                attachments = (imgs + it.attachments).take(ChatUiState.MAX_ATTACHMENTS),
+                attachments = (imgs + it.attachments).take(it.maxAttachments),
             )
         }
     }
@@ -411,10 +477,10 @@ class ChatViewModel(
             _state.update { it.copy(error = "no_vision_model") }
             return
         }
-        when (val r = AttachmentEncoder.encode(bytes, mime)) {
+        when (val r = AttachmentEncoder.encode(bytes, mime, attachmentMaxFileBytes)) {
             is AttachmentEncoder.Result.Err -> _state.update { it.copy(error = r.code) }
             is AttachmentEncoder.Result.Ok -> _state.update {
-                if (it.attachments.size >= ChatUiState.MAX_ATTACHMENTS) it.copy(error = "attachment_too_many")
+                if (it.attachments.size >= it.maxAttachments) it.copy(error = "attachment_too_many")
                 else it.copy(attachments = it.attachments + r.dataUrl)
             }
         }
@@ -569,9 +635,14 @@ class ChatViewModel(
         cancelListening()
     }
 
-    class Factory(private val store: SessionAccess, private val client: YashaChatApi) : ViewModelProvider.Factory {
+    class Factory(
+        private val store: SessionAccess,
+        private val client: YashaChatApi,
+        private val installedVersionCode: Int = 1,
+        private val installedVersionName: String = "",
+    ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T =
-            ChatViewModel(store, client) as T
+            ChatViewModel(store, client, installedVersionCode, installedVersionName) as T
     }
 }

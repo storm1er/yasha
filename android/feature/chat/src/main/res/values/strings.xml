@@ -43,6 +43,18 @@
     <string name="setup_note_reinstall">Reinstalling the app resets the role — set it again after updates that change the signature.</string>
     <string name="setup_fallbacks_title">Without the role</string>
     <string name="setup_fallbacks">Use the quick-settings tile “Ask Yasha”, long-press the app icon → “Ask Yasha” shortcut, or the “Ask Yasha” action on the Yasha notification.</string>
+    <!-- Update channel (issue #34, Phase A) -->
+    <string name="update_card_title">App updates</string>
+    <string name="update_card_intro">Check whether this server publishes a newer app build.</string>
+    <string name="update_installed_fmt">Installed: %1$s (build %2$d)</string>
+    <string name="update_check_button">Check for updates</string>
+    <string name="update_up_to_date">You are up to date.</string>
+    <string name="update_found_fmt">Update available: %1$s</string>
+    <string name="update_available_fmt">New version available (%1$s)</string>
+    <string name="update_available_title">Update available</string>
+    <string name="update_dialog_body">One-tap install is on its way. For now, download the new version from this server\'s web UI (sidebar → Get the app) and install it over this one: your conversations, sign-in and permissions are preserved.</string>
+    <string name="update_action">Update</string>
+    <string name="update_later">Later</string>
     <string name="error_unauthorized">Session expired — sign in again.</string>
     <string name="error_busy">Another generation is still running.</string>
     <string name="error_no_model">No model configured yet — ask your server admin.</string>

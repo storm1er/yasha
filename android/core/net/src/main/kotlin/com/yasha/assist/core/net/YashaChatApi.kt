@@ -29,6 +29,8 @@ interface YashaChatApi {
     suspend fun openThread(id: String): ApiResult<ThreadDetailDto>
     suspend fun deleteThread(id: String): ApiResult<Unit>
     suspend fun audioConfig(): ApiResult<AudioConfigDto>
+    suspend fun attachmentLimits(): ApiResult<AttachmentLimitsDto>
+    suspend fun fetchAppVersion(): ApiResult<AppVersionDto>
     suspend fun retryTranscribe(messageId: String): ApiResult<Boolean>
     fun chatStream(body: ChatRequestBody): Flow<ChatEvent>
 }

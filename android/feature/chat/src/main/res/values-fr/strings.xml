@@ -43,6 +43,18 @@
     <string name="setup_note_reinstall">Réinstaller l\'appli réinitialise le rôle — redéfinissez-le après les changements de signature.</string>
     <string name="setup_fallbacks_title">Sans le rôle</string>
     <string name="setup_fallbacks">Utilisez la tuile « Interroger Yasha », l\'appui long sur l\'icône → raccourci « Interroger Yasha », ou l\'action de la notification Yasha.</string>
+    <!-- Update channel (issue #34, Phase A) -->
+    <string name="update_card_title">Mises à jour de l\'appli</string>
+    <string name="update_card_intro">Vérifie si ce serveur publie une version plus récente de l\'appli.</string>
+    <string name="update_installed_fmt">Installée : %1$s (build %2$d)</string>
+    <string name="update_check_button">Rechercher des mises à jour</string>
+    <string name="update_up_to_date">Vous êtes à jour.</string>
+    <string name="update_found_fmt">Mise à jour disponible : %1$s</string>
+    <string name="update_available_fmt">Nouvelle version disponible (%1$s)</string>
+    <string name="update_available_title">Mise à jour disponible</string>
+    <string name="update_dialog_body">L\'installation en un geste arrive bientôt. En attendant, téléchargez la nouvelle version depuis l\'interface web de ce serveur (barre latérale → Obtenir l\'appli) et installez-la par-dessus celle-ci : vos conversations, votre connexion et vos permissions sont conservées.</string>
+    <string name="update_action">Mettre à jour</string>
+    <string name="update_later">Plus tard</string>
     <string name="error_unauthorized">Session expirée — reconnectez-vous.</string>
     <string name="error_busy">Une génération est déjà en cours.</string>
     <string name="error_no_model">Aucun modèle configuré — voyez avec l\'administrateur.</string>

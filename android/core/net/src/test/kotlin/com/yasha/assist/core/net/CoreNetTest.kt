@@ -183,6 +183,7 @@ class EndpointsTest {
         assertEquals("https://example.com/api/threads", e.threads)
         assertEquals("https://example.com/api/audio/config", e.audioConfig)
         assertEquals("https://example.com/api/chat/messages/m1/transcribe", e.messageTranscribe("m1"))
+        assertEquals("https://example.com/api/app/version", e.appVersion)
         assertEquals(1568, YashaEndpoints.ATTACHMENT_MAX_SIDE)
     }
 }
@@ -204,6 +205,32 @@ class AudioDtoTest {
         val sparse = json.decodeFromString(AudioConfigDto.serializer(), "{}")
         assertEquals(false, sparse.enabled)
         assertNull(sparse.model)
+    }
+
+    @Test
+    fun `app version parses the server payload`() {
+        val dto = json.decodeFromString(
+            AppVersionDto.serializer(),
+            """{"versionCode":2,"versionName":"0.2.9"}""",
+        )
+        assertEquals(2, dto.versionCode)
+        assertEquals("0.2.9", dto.versionName)
+    }
+
+    @Test
+    fun `attachment limits parses the server payload with defaults`() {
+        val dto = json.decodeFromString(
+            AttachmentLimitsDto.serializer(),
+            """{"maxImagesPerMessage":2,"maxWindowImages":5,"maxUploadBytes":1048576}""",
+        )
+        assertEquals(2, dto.maxImagesPerMessage)
+        assertEquals(5, dto.maxWindowImages)
+        assertEquals(1048576L, dto.maxUploadBytes)
+        val sparse = json.decodeFromString(AttachmentLimitsDto.serializer(), "{}")
+        // Defaults mirror lib/settings.ts (chat.maxImagesPerMessage/…).
+        assertEquals(4, sparse.maxImagesPerMessage)
+        assertEquals(8, sparse.maxWindowImages)
+        assertEquals(20971520L, sparse.maxUploadBytes)
     }
 
     @Test
