@@ -14,8 +14,12 @@
 //               confirm_action) forwarded as STANDARD tool chunks; the client
 //               answers via useChat's addToolOutput (docs/protocol-v3.md)
 //   data-error  {code}            terminal failure (timeout / upstream_* / empty_response)
-//   [DONE]      by createUIMessageStreamResponse; keepAliveMs carries the
-//               idle-proxy heartbeat (replaces the hand-rolled `: ping`).
+//   [DONE]      hub close frame; the hub heartbeat carries the idle-proxy
+//               keep-alive (`: keep-alive` SSE comments, issue #33).
+//
+// Issue #33: the turn runs DECOUPLED from the POST connection (lib/chat/replay
+// hub): disconnects are view unsubscribes, generation finishes and persists;
+// reattach via GET /api/chat/[threadId]/stream, kill via POST /api/chat/stop.
 //
 // Deliberately dropped at the seam: reasoning parts (AGENTS rule 1 — only
 // content is forwarded/persisted), MCP tool-* chunks (chips ride data-tool),
@@ -27,7 +31,6 @@ import { eq } from "drizzle-orm";
 import {
   APICallError,
   createUIMessageStream,
-  createUIMessageStreamResponse,
   stepCountIs,
   streamText,
   type ModelMessage,
@@ -41,20 +44,22 @@ import { mcpMaxToolRounds, memoryEnabled, resolveEventConfig } from "@/lib/setti
 import { getUserMemoryEnabled } from "@/lib/memory/prefs";
 import { createAiToolLoop } from "@/lib/mcp/ai-tools";
 import { createTurnParts, type ToolRoundRecord } from "@/lib/mcp/loop";
-import type { Toolset } from "@/lib/mcp/bridge";
+import { openAiToolName, type Toolset } from "@/lib/mcp/bridge";
 import {
+  APPROVAL_TOOL,
   INTERACTIVE_SERVER,
   INTERACTIVE_TOOL_DEFS,
   NO_ANSWER,
   createPendingActions,
   isInteractiveToolName,
-  type InteractiveToolName,
+  type PendingCall,
 } from "@/lib/chat/interactive";
 import { buildRenderUiTool, type GenUiNode, type RenderedCard } from "@/lib/chat/render-ui";
+import { openReplay, sseResponse } from "@/lib/chat/replay";
 
 export type ChatStreamOpts = {
-  req: Request;
-  /** Aborts the upstream call on client disconnect or first-token timeout. */
+  /** Aborts the upstream call on first-token timeout or an explicit stop
+   *  (issue #33: a client disconnect no longer aborts — the hub does). */
   controller: AbortController;
   userId: string;
   threadId: string;
@@ -74,6 +79,10 @@ export type ChatStreamOpts = {
    *  (display-only — no pending rows). Defaults to `interactive` upstream;
    *  Android sends interactive:false + cards:true. False ⇒ no render_ui. */
   cards: boolean;
+  /** Issue #32 (`mcp.requireToolApprovals`): MCP calls pause for an explicit
+   *  user verdict when the surface is interactive; non-interactive surfaces
+   *  get them blocked (never silently executed). */
+  requireApprovals?: boolean;
   newThread: boolean;
   firstTokenTimeoutMs: number;
   heartbeatMs: number;
@@ -139,13 +148,20 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
       })
       .run();
     await db.update(threads).set({ updatedAt: now }).where(eq(threads.id, opts.threadId)).run();
-    // Interactive asks (protocol v3): the client can only answer what was
-    // rendered, and answers are only accepted against these rows.
-    const asks = toolRecords.filter((r) => r.client && r.callId);
-    if (asks.length > 0) {
+    // Interactive asks and MCP approvals (protocol v3): the client can only
+    // answer what was rendered, and answers are only accepted against these
+    // rows. An approval row stores the QUALIFIED tool name so the resume
+    // branch can re-resolve the handle and execute it (issue #32).
+    const pendings = toolRecords.filter((r) => (r.client || r.approval) && r.callId);
+    if (pendings.length > 0) {
+      const calls: PendingCall[] = pendings.map((r) =>
+        r.client
+          ? { toolCallId: r.callId!, tool: r.name, args: r.args }
+          : { toolCallId: r.callId!, tool: openAiToolName(r.server, r.name), args: r.args, kind: "approval" },
+      );
       createPendingActions(
         { threadId: opts.threadId, userId: opts.userId, messageId: assistantMsgId },
-        asks.map((r) => ({ toolCallId: r.callId!, tool: r.name as InteractiveToolName, args: r.args })),
+        calls,
         now,
       );
     }
@@ -175,12 +191,6 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
       }
     }
   };
-
-  const onClientAbort = () => {
-    state.clientAborted = true;
-    opts.controller.abort();
-  };
-  opts.req.signal.addEventListener("abort", onClientAbort);
 
   // v1 error-code mapping over SDK errors: provider HTTP failures keep the
   // upstream_status_N shape; an SDK-wrapped mid-stream death carries the
@@ -217,10 +227,32 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
 
       const maxRounds = mcpMaxToolRounds();
       let roundsDispatched = 0;
+      // MCP-tool approvals (issue #32): a pause rides standard tool-input-*
+      // chunks of a synthetic `mcp_approval` tool — the same answer/resume
+      // machinery as the interactive asks — while the ai-tools gate holds the
+      // bridge call back. Deduped per turn: a model retry never re-asks.
+      const pendingApprovals = new Set<string>();
       const toolLoop = createAiToolLoop({
         toolset: opts.toolset,
         sendEvent: (ev) => send({ type: "data-tool", data: ev }),
         canDispatch: () => roundsDispatched < maxRounds,
+        approval: opts.requireApprovals
+          ? {
+              requires: () => true,
+              canPrompt: opts.interactive,
+              hasPending: (name) => pendingApprovals.has(name),
+              onRequest: (c) => {
+                pendingApprovals.add(openAiToolName(c.serverId, c.tool));
+                send({ type: "tool-input-start", toolCallId: c.toolCallId, toolName: APPROVAL_TOOL });
+                send({
+                  type: "tool-input-available",
+                  toolCallId: c.toolCallId,
+                  toolName: APPROVAL_TOOL,
+                  input: { server: c.serverId, tool: c.tool, args: c.args },
+                });
+              },
+            }
+          : undefined,
       });
       // Interactive asks are recorded into `toolRecords` in stream order (so
       // meta.tools, parts interleaving and the pending rows all agree).
@@ -420,13 +452,13 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
       }
 
       if (state.errorCode) send({ type: "data-error", data: { code: state.errorCode } });
-      // An interactive ask or a displayed card IS output: a turn that ends on
-      // a question or a visual is not an empty response.
+      // An interactive ask, a pending approval or a displayed card IS output:
+      // a turn that ends on a question is not an empty response.
       else if (
         !state.clientAborted &&
         state.assistantText.length === 0 &&
         cardRecords.length === 0 &&
-        !toolRecords.some((r) => r.client)
+        !toolRecords.some((r) => r.client || r.approval)
       )
         send({ type: "data-error", data: { code: "empty_response" } });
 
@@ -451,7 +483,7 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
         } else if (
           state.assistantText.length === 0 &&
           cardRecords.length === 0 &&
-          !toolRecords.some((r) => r.client)
+          !toolRecords.some((r) => r.client || r.approval)
         ) {
           await markFailed("empty_response");
         } else {
@@ -460,41 +492,34 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
       } catch {
         /* persistence best-effort */
       }
-      opts.req.signal.removeEventListener("abort", onClientAbort);
       opts.release();
     },
   });
 
-  const response = createUIMessageStreamResponse({
-    stream,
-    keepAliveMs: opts.heartbeatMs,
-    headers: {
-      "Cache-Control": "no-store, no-transform",
-      "X-Accel-Buffering": "no",
-      Connection: "keep-alive",
-    },
+  // Issue #33: generation is detached from this request's connection. The
+  // replay hub buffers every SSE frame; the POST response below and later
+  // reattaches (GET /api/chat/[threadId]/stream) are just views. A view
+  // cancel unsubscribes — it no longer kills the turn; the stop route
+  // (killReplay) is the explicit kill, aborting the controller so onEnd
+  // persists the partial row as `aborted: true`.
+  const replay = openReplay(opts.userId, opts.threadId, opts.heartbeatMs, () => {
+    state.clientAborted = true;
+    opts.controller.abort();
   });
-
-  // Consumer cancel without a req abort (tab close racing the request): mirrors
-  // the v1 ReadableStream.cancel() arm. Flag + abort go first so the execute's
-  // onEnd (driven by the abort) persists the partial as `aborted: true` and
-  // releases the slot — success persistence can never win that race.
-  const reader = response.body!.getReader();
-  const wrapped = new ReadableStream<Uint8Array>({
-    pull: async (ctrl) => {
-      const { done, value } = await reader.read();
-      if (done) ctrl.close();
-      else ctrl.enqueue(value);
-    },
-    cancel: (reason) => {
-      state.clientAborted = true;
-      opts.controller.abort();
-      return reader.cancel(reason);
-    },
-  });
-  return new Response(wrapped, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
-  });
+  const reader = stream.getReader();
+  void (async () => {
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        // Byte-identical to the SDK's JsonToSseTransformStream frames.
+        replay.frame(`data: ${JSON.stringify(value)}\n\n`);
+      }
+    } catch {
+      /* execute() maps every failure to a data-error chunk; a throw here is
+      the sanitized-invariant case — the stream is over either way. */
+    }
+    replay.close();
+  })();
+  return sseResponse(replay.view());
 }

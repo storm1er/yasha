@@ -50,6 +50,8 @@ export function McpCard() {
   const [errorAt, setErrorAt] = useState(0);
   const [lastReloadAt, setLastReloadAt] = useState(0);
   const [userPrivateUrls, setUserPrivateUrls] = useState(false);
+  // Issue #32: MCP calls pause for an explicit per-call user verdict.
+  const [requireApprovals, setRequireApprovals] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
 
   function showError(key: string) {
@@ -65,12 +67,14 @@ export function McpCard() {
         mcpEnabled: boolean;
         userServersEnabled: boolean;
         userPrivateUrls?: boolean;
+        requireToolApprovals?: boolean;
         servers: ServerEntry[];
       };
       setServers(data.servers);
       setGlobalEnabled(data.mcpEnabled);
       setUserServersEnabled(data.userServersEnabled === true);
       setUserPrivateUrls(data.userPrivateUrls === true);
+      setRequireApprovals(data.requireToolApprovals === true);
       setLastReloadAt(Date.now());
       return data.servers;
     } catch {
@@ -183,6 +187,20 @@ export function McpCard() {
     }
   }
 
+  async function toggleRequireApprovals() {
+    setBusy("requireApprovals");
+    try {
+      await fetch("/api/admin/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ "mcp.requireToolApprovals": !requireApprovals }),
+      });
+      setRequireApprovals(!requireApprovals);
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function add() {
     const trimmedName = name.trim();
     const trimmedUrl = url.trim();
@@ -259,6 +277,21 @@ export function McpCard() {
             onClick={() => void toggleUserPrivateUrls()}
           >
             {userPrivateUrls ? t("mcpOn") : t("mcpOff")}
+          </Button>
+        </div>
+        <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+          <span className="flex-col">
+            <span>{t("mcpApprovalsToggle")}</span>
+            <span className="block text-xs text-muted-foreground">{t("mcpApprovalsHint")}</span>
+          </span>
+          <Button
+            variant={requireApprovals ? "default" : "outline"}
+            size="sm"
+            disabled={busy === "requireApprovals"}
+            data-testid="mcp-approvals-toggle"
+            onClick={() => void toggleRequireApprovals()}
+          >
+            {requireApprovals ? t("mcpOn") : t("mcpOff")}
           </Button>
         </div>
         {visibleError && (

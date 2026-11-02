@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { sql, and, eq } from "drizzle-orm";
 import { getAuthedUserId } from "@/lib/api-auth";
+import { isGenerating } from "@/lib/chat/replay";
 import { db, ensureReady } from "@/lib/db";
 import { messages, threads } from "@/lib/db/schema";
 import { rateLimit } from "@/lib/rate-limit";
@@ -45,6 +46,9 @@ export async function GET(req: NextRequest, { params }: Params) {
       title: thread.title,
       model: thread.model,
       updatedAt: thread.updatedAt.toISOString(),
+      // Issue #33: a detached generation may still be running (client is gone
+      // or reloaded mid-turn) — the surface calls resumeStream() on this flag.
+      generating: isGenerating(userId, threadId),
     },
     messages: rows.map((m) => ({
       id: m.id,

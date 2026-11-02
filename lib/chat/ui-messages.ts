@@ -30,6 +30,13 @@ export type ToolChip = {
   /** Generative UI (issue #16): structured card from a valid yasha_card tool
    *  result — rendered under the chip; absent for plain results. */
   card?: GenerativeCard;
+  /** MCP-tool approval record (issue #32, meta.tools): `callId` is the id the
+   *  verdict gates against; while `approval && answered !== true` a stored
+   *  replay turns the record back into an actionable `mcp_approval` tool part
+   *  (the chip view is skipped). */
+  callId?: string;
+  approval?: boolean;
+  answered?: boolean;
 };
 
 /** Ordered rendering segment of an assistant turn (issue #7): tool chips
@@ -53,6 +60,8 @@ export type ChatMessage = {
   segments?: MessageSegment[];
   /** Protocol v3 interactive asks pending (or answered) on this turn. */
   interactive?: InteractiveAsk[];
+  /** MCP-tool approvals pending (or answered) on this turn (issue #32). */
+  approvals?: ToolApproval[];
   streaming?: boolean;
   /** Set when the assistant turn for this user message failed upstream
    *  (persisted in meta.error) — renders the red retry notice. */
@@ -92,6 +101,9 @@ export type YashaDataParts = {
 export type YashaToolParts = {
   ask_choice: { input: { question?: string; options?: string[] }; output: unknown };
   confirm_action: { input: { question?: string; detail?: string }; output: unknown };
+  /** MCP-tool approval (issue #32): synthetic tool part for a paused MCP
+   *  call — Approve/Deny answer with "approved"/"denied" outputs. */
+  mcp_approval: { input: { server?: string; tool?: string; args?: string }; output: unknown };
 };
 
 export type YashaUIMessage = UIMessage<ChatMessageMeta, YashaDataParts, YashaToolParts>;
@@ -136,6 +148,38 @@ function askFromPart(part: YashaUIMessage["parts"][number]): InteractiveAsk | nu
 }
 
 type TextPart = TextUIPart;
+
+/** Renderer view of one MCP-tool approval (issue #32) — live via the
+ *  synthetic `mcp_approval` tool chunks, or rebuilt from a stored pending
+ *  record (see `storedToUiMessages`). */
+export type ToolApproval = {
+  toolCallId: string;
+  server: string;
+  tool: string;
+  args?: string;
+  /** Verdict once answered ("approved"/"denied") — buttons give way to it. */
+  answered?: string;
+};
+
+function approvalFromPart(part: YashaUIMessage["parts"][number]): ToolApproval | null {
+  if (part.type !== "tool-mcp_approval") return null;
+  if (part.state === "input-streaming") return null;
+  const input = part.input as { server?: unknown; tool?: unknown; args?: unknown } | undefined;
+  const tool = typeof input?.tool === "string" ? input.tool : "";
+  if (!tool) return null;
+  return {
+    toolCallId: part.toolCallId,
+    server: typeof input?.server === "string" ? input.server : "",
+    tool,
+    args: typeof input?.args === "string" ? input.args : undefined,
+    answered:
+      part.state === "output-available"
+        ? typeof part.output === "string"
+          ? part.output
+          : JSON.stringify(part.output)
+        : undefined,
+  };
+}
 
 const isTextPart = (p: YashaUIMessage["parts"][number]): p is TextPart => p.type === "text";
 
@@ -198,8 +242,27 @@ function storedChips(tools: unknown): ToolChip[] {
         // Malformed persisted cards degrade to no-card (stored data is trusted
         // but re-validated — the renderer must never see a partial shape).
         ...(card ? { card } : {}),
+        // Approval records (issue #32) carry the verdict bookkeeping.
+        callId: typeof t.callId === "string" ? t.callId : undefined,
+        approval: t.approval === true ? true : undefined,
+        answered: t.answered === true ? true : undefined,
       };
     });
+}
+
+/** Chip → the part a live turn would have streamed. A still-pending MCP
+ *  approval (issue #32) is rebuilt as the actionable synthetic tool part;
+ *  everything else is the plain data-tool chip part. */
+function chipPart(chip: ToolChip): YashaUIMessage["parts"][number] {
+  if (chip.approval && chip.answered !== true && chip.callId) {
+    return {
+      type: "tool-mcp_approval",
+      toolCallId: chip.callId,
+      state: "input-available",
+      input: { server: chip.server, tool: chip.name, args: chip.args },
+    } as YashaUIMessage["parts"][number];
+  }
+  return { type: "data-tool", data: chip };
 }
 
 /**
@@ -223,14 +286,17 @@ function partsFromStoredMeta(
     const part = entry as { type?: unknown; text?: unknown; count?: unknown };
     if (part.type === "text") {
       if (typeof part.text !== "string") return undefined;
-      out.push({ type: "text", text: part.text });
+      // state:"done" mirrors what the stream processor produces at text-end —
+      // lastAssistantMessageIsCompleteWithToolCalls refuses to auto-send a
+      // resume while a trailing text part is still "streaming".
+      out.push({ type: "text", text: part.text, state: "done" });
     } else if (part.type === "tools") {
       const n =
         typeof part.count === "number" && Number.isInteger(part.count) && part.count >= 0
           ? part.count
           : -1;
       if (n < 0 || i + n > chips.length) return undefined;
-      for (const chip of chips.slice(i, i + n)) out.push({ type: "data-tool", data: chip });
+      for (const chip of chips.slice(i, i + n)) out.push(chipPart(chip));
       i += n;
     } else if (part.type === "card") {
       if (c >= cards.length) return undefined;
@@ -261,12 +327,12 @@ export function storedToUiMessages(rows: ServerMessage[]): YashaUIMessage[] {
       const chips = storedChips(meta.tools);
       const cards = parseStoredCards(meta.cards);
       parts = partsFromStoredMeta(meta.parts, chips, cards) ?? [
-        ...chips.map((chip) => ({ type: "data-tool" as const, data: chip })),
-        ...(m.content ? [{ type: "text" as const, text: m.content }] : []),
+        ...chips.map(chipPart),
+        ...(m.content ? [{ type: "text" as const, text: m.content, state: "done" as const }] : []),
         ...cards.map((card) => ({ type: "data-card" as const, data: card })),
       ];
     } else if (m.content) {
-      parts = [{ type: "text", text: m.content }];
+      parts = [{ type: "text", text: m.content, state: "done" }];
     }
     return { id: m.id, role: m.role, metadata: messageMeta, parts };
   });
@@ -304,6 +370,7 @@ export function projectMessages(messages: YashaUIMessage[], streaming: boolean):
     const tools: ToolChip[] = [];
     const segments: MessageSegment[] = [];
     const asks: InteractiveAsk[] = [];
+    const approvals: ToolApproval[] = [];
     let cardsShown = 0;
     for (const part of m.parts) {
       if (isTextPart(part)) {
@@ -319,6 +386,11 @@ export function projectMessages(messages: YashaUIMessage[], streaming: boolean):
       const ask = askFromPart(part);
       if (ask) {
         asks.push(ask);
+        continue;
+      }
+      const approval = approvalFromPart(part);
+      if (approval) {
+        approvals.push(approval);
         continue;
       }
       if (part.type === "data-card") {
@@ -344,9 +416,15 @@ export function projectMessages(messages: YashaUIMessage[], streaming: boolean):
         segments.push({ kind: "tools", tools: [chip] });
       }
     }
-    // A question, a card or a chip with no text yet is still a visible turn
-    // (it IS the assistant's move).
-    if (content === "" && tools.length === 0 && asks.length === 0 && cardsShown === 0)
+    // A question, an approval, a card or a chip with no text yet is still a
+    // visible turn (it IS the assistant's move).
+    if (
+      content === "" &&
+      tools.length === 0 &&
+      asks.length === 0 &&
+      approvals.length === 0 &&
+      cardsShown === 0
+    )
       return; // nothing visible yet
     out.push({
       id: m.id,
@@ -354,6 +432,7 @@ export function projectMessages(messages: YashaUIMessage[], streaming: boolean):
       content,
       tools: tools.length > 0 ? tools : undefined,
       interactive: asks.length > 0 ? asks : undefined,
+      approvals: approvals.length > 0 ? approvals : undefined,
       // A projected row always carries at least one segment (non-empty text
       // or at least one chip — invisible-only messages are skipped above).
       segments,

@@ -24,6 +24,7 @@ import {
   type ChatMessageMeta,
   type InteractiveAsk,
   type ServerMessage,
+  type ToolApproval,
   type ToolChip,
   type YashaUIMessage,
 } from "@/lib/chat/ui-messages";
@@ -184,6 +185,60 @@ function InteractiveAskView({
   );
 }
 
+// MCP-tool approval (issue #32): a paused MCP call waiting for an explicit
+// verdict. Approve/Deny feed addToolOutput like the interactive asks — the
+// resume request executes (or refuses) the deferred tool server-side.
+function ToolApprovalView({
+  approval,
+  disabled,
+  t,
+  onAnswer,
+}: {
+  approval: ToolApproval;
+  disabled: boolean;
+  t: ReturnType<typeof useTranslations>;
+  onAnswer: (approval: ToolApproval, output: string) => void;
+}) {
+  if (approval.answered !== undefined) {
+    return (
+      <p data-testid="approval-answered" className="text-sm text-muted-foreground">
+        {t("askAnswered", { answer: approval.answered === "approved" ? t("approve") : t("deny") })}
+      </p>
+    );
+  }
+  return (
+    <div data-testid="tool-approval" className="rounded-2xl border border-amber-500/40 bg-card px-4 py-3">
+      <p className="text-[15px] font-medium">{t("approvalQuestion", { tool: approval.tool })}</p>
+      {approval.server !== "" && (
+        <p className="mt-0.5 text-xs text-muted-foreground">{t("approvalServer", { server: approval.server })}</p>
+      )}
+      {approval.args && (
+        <pre className="mt-2 max-h-32 overflow-auto rounded-lg bg-muted px-2 py-1.5 text-xs">{approval.args}</pre>
+      )}
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={disabled}
+          data-testid="approval-approve"
+          onClick={() => onAnswer(approval, "approved")}
+          className="rounded-full border border-emerald-500/50 px-4 py-1.5 text-sm transition-colors hover:bg-emerald-500/10 disabled:opacity-50"
+        >
+          {t("approve")}
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          data-testid="approval-deny"
+          onClick={() => onAnswer(approval, "denied")}
+          className="rounded-full border border-destructive/40 px-4 py-1.5 text-sm transition-colors hover:bg-destructive/10 disabled:opacity-50"
+        >
+          {t("deny")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ToolChipView({ tool, label }: { tool: ToolChip; label: string }) {
   const t = useTranslations("chat");
   const [open, setOpen] = useState(false);
@@ -293,8 +348,14 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
   // thread id + the full client window — with model/attachments appended as
   // extra fields. History is transport only: the server reconciles ids and
   // hydrates content from its own rows (lib/chat/request-v3.ts).
+  // `prepareReconnectToStreamRequest` is an imperative SDK callback — it reads
+  // the thread ref at RESUME time, never during render, but the compiler
+  // attributes the whole transport construction to the render phase (scoped
+  // disable below). Undefined ⇒ default URL, which matches no hub while no
+  // thread is open (204, no-resume).
   const transport = useMemo(
     () =>
+      // eslint-disable-next-line react-hooks/refs
       new DefaultChatTransport<YashaUIMessage>({
         api: "/api/chat",
         fetch: (url, init) =>
@@ -307,19 +368,27 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
         prepareSendMessagesRequest: ({ messages, body }) => ({
           body: { messages, ...(body ?? {}) },
         }),
+        // Issue #33 reattach: point the SDK's `GET ${api}/${chatId}/stream`
+        // probe at the CURRENT thread's replay hub (the chat id is constant —
+        // the thread lives in a ref, not the chat identity).
+        prepareReconnectToStreamRequest: () => {
+          const t = threadIdRef.current;
+          return { api: t ? `/api/chat/${encodeURIComponent(t)}/stream` : undefined };
+        },
       }),
     [router]
   );
 
-  const { messages, setMessages, sendMessage, stop, status, addToolOutput } = useChat<YashaUIMessage>({
-    transport,
-    // Answering an interactive ask (addToolOutput) immediately sends the v3
-    // resume request carrying the tool output (docs/protocol-v3.md).
-    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
-    // Transport-level failure (HTTP status, network death): the sent user
-    // message stays visible next to the error + Retry action below.
-    onError: () => setError("error"),
-  });
+  const { messages, setMessages, sendMessage, stop, status, addToolOutput, resumeStream } =
+    useChat<YashaUIMessage>({
+      transport,
+      // Answering an interactive ask (addToolOutput) immediately sends the v3
+      // resume request carrying the tool output (docs/protocol-v3.md).
+      sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
+      // Transport-level failure (HTTP status, network death): the sent user
+      // message stays visible next to the error + Retry action below.
+      onError: () => setError("error"),
+    });
   const streaming = status === "submitted" || status === "streaming";
   const projected = useMemo(() => projectMessages(messages, streaming), [messages, streaming]);
 
@@ -473,7 +542,7 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
         return;
       }
       const data = (await res.json()) as {
-        thread?: { model?: string | null };
+        thread?: { model?: string | null; generating?: boolean };
         messages: ServerMessage[];
       };
       if (alive) {
@@ -481,6 +550,9 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
         setLoadingHistory(false);
         setThreadModel(data.thread?.model ?? null);
         setMessages(storedToUiMessages(data.messages));
+        // Issue #33: the turn may still be generating server-side (reload or
+        // reconnect mid-turn) — reattach and replay it live from frame zero.
+        if (data.thread?.generating === true) void resumeStream();
       }
     };
     let alive = true;
@@ -493,7 +565,28 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
     return () => {
       alive = false;
     };
-  }, [initialThreadId, router, shell, setMessages, stop]);
+  }, [initialThreadId, router, shell, setMessages, stop, resumeStream]);
+
+  /** Explicit server-side stop (issue #33): a local stop() only closes this
+   *  view — the detached generation would keep running upstream. The stop
+   *  route aborts the turn (partial persists as aborted), then we release UI.
+   *  Before the first data-thread arrives there is no id to target: the turn
+   *  finishes server-side and shows up on the thread (documented window). */
+  const stopAll = useCallback(async () => {
+    const t = threadIdRef.current;
+    if (t) {
+      try {
+        await fetch("/api/chat/stop", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: t }),
+        });
+      } catch {
+        /* best-effort: the local stop below still releases the UI */
+      }
+    }
+    stop();
+  }, [stop]);
 
   const send = useCallback(
     (rawText: string, images?: string[], audioUrl?: string) => {
@@ -546,6 +639,21 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
       addToolOutput({
         tool: ask.tool,
         toolCallId: ask.toolCallId,
+        output,
+        options: { body: { id: threadIdRef.current ?? "new" } },
+      });
+    },
+    [addToolOutput]
+  );
+
+  /** Answer an MCP-tool approval (issue #32): identical resume machinery —
+   *  the verdict rides the synthetic `mcp_approval` tool part; the server
+   *  executes or refuses the deferred call and overlays its result. */
+  const answerApproval = useCallback(
+    (approval: ToolApproval, output: string) => {
+      addToolOutput({
+        tool: "mcp_approval",
+        toolCallId: approval.toolCallId,
         output,
         options: { body: { id: threadIdRef.current ?? "new" } },
       });
@@ -665,7 +773,7 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
     onChange: setInput,
     onSubmit: () => send(input, attachments.map((a) => a.dataUrl)),
     streaming,
-    onStop: stop,
+    onStop: stopAll,
     onModelChange: handleModelChange,
     onModelCapabilities: setCaps,
     threadModel,
@@ -832,6 +940,19 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
                                 disabled={streaming}
                                 t={t}
                                 onAnswer={answerAsk}
+                              />
+                            ))}
+                          </div>
+                        )}
+                        {m.approvals && m.approvals.length > 0 && (
+                          <div className="mt-2 space-y-2">
+                            {m.approvals.map((approval) => (
+                              <ToolApprovalView
+                                key={approval.toolCallId}
+                                approval={approval}
+                                disabled={streaming}
+                                t={t}
+                                onAnswer={answerApproval}
                               />
                             ))}
                           </div>

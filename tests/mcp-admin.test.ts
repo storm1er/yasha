@@ -61,12 +61,14 @@ describe("GET", () => {
       mcpEnabled: boolean;
       userServersEnabled: boolean;
       userPrivateUrls: boolean;
+      requireToolApprovals: boolean;
       servers: { id: string; builtin: boolean; headers: Record<string, string> | null; health: { ok: boolean } }[];
     }>(res);
     expect(body.ok).toBe(true);
     expect(body.mcpEnabled).toBe(true);
     expect(body.userServersEnabled).toBe(false);
     expect(body.userPrivateUrls).toBe(false);
+    expect(body.requireToolApprovals).toBe(false); // issue #32, default off
     const ketch = body.servers.find((s) => s.id === "ketch")!;
     expect(ketch.builtin).toBe(true);
     const rem = body.servers.find((s) => s.id === "rem")!;

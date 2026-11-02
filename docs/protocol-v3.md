@@ -15,8 +15,8 @@ tests use the same fixtures).
 | P2 pending-actions gate | shipped | `pending_actions` table, `lib/chat/interactive.ts` |
 | P3 interactive tools (`ask_choice`/`confirm_action`) + resume | shipped | web renders + answers; Android sends `interactive: false` |
 | Tier-1 generative UI `render_ui` (issue #28) | shipped | `data-card` chunk + `meta.cards`; gated by `interactive ∥ cards` (issue #30), see §Response |
-| P3 resume-stream reattach | **not built** | optional; see "Resume streams" below |
-| MCP-tool **approvals** (`tool-approval-request` / `experimental_toolApprovalSecret`) | **deferred** | the gate + overlay machinery here is the substrate; `pending_actions.kind` is reserved. The SDK's per-request message-sequence approval contract doesn't compose with the DB-hydration loop yet — tracked as a follow-up on #21 |
+| P3 resume-stream reattach (issue #33) | shipped | detached generation + replay hub (`lib/chat/replay.ts`), `GET /api/chat/[threadId]/stream`, `POST /api/chat/stop`, thread `generating` flag — see §Resume streams |
+| MCP-tool **approvals** (issue #32) | shipped | own contract (not the SDK's `tool-approval-request`): `kind:"approval"` rows + synthetic `mcp_approval` tool part + setting `mcp.requireToolApprovals` — see §Pending actions |
 
 
 ## Principles
@@ -80,8 +80,9 @@ The response remains the AI SDK UI-message stream (`createUIMessageStreamRespons
 resumed turn's step), `text-start/delta/end`, `data-tool` (chip state machine, optional
 `card` per issue #16), `data-error {code}`, `[DONE]`. Clients must ignore unknown chunk types.
 
-**Tier-1 generative UI (issue #28, web surface only)** — the `render_ui` tool (offered when
-`interactive: true`) executes server-side: the model's component tree is validated
+**Tier-1 generative UI (issue #28; surfaces with a card renderer — web + Android)** — the
+`render_ui` tool (offered when `interactive ∥ cards`, issue #30) executes server-side: the
+model's component tree is validated
 (`lib/chat/render-ui.ts`: closed vocabulary, depth/node/string caps) and, if valid, streamed as
 the custom part `data-card {id, root}` and persisted flat on `meta.cards` (interleaved into the
 turn via `{type:"card"}` entries in `meta.parts`). The model receives a short receipt; invalid
@@ -95,8 +96,13 @@ tool chunks so `useChat` exposes typed tool parts natively:
 - `tool-input-start` / `tool-input-delta` / `tool-input-available` for the tool call
   (e.g. `ask_choice`, `confirm_action`) → the client renders the question and calls
   `addToolOutput(...)`.
-- Approvals: `tool-approval-request` → `addToolApprovalResponse(...)`
-  (`experimental_toolApprovalSecret` signs/verifies).
+- **MCP-tool approvals (issue #32)**: with the admin setting `mcp.requireToolApprovals` on,
+  a gated MCP call streams the synthetic `mcp_approval` tool part (`tool-input-start` +
+  `tool-input-available` with `input: {server, tool, args}`) instead of executing → the client
+  renders Approve/Deny and calls `addToolOutput(...)` with `"approved"` / `"denied"`. The
+  SDK-native `tool-approval-request`/`addToolApprovalResponse` path is NOT used: its
+  per-request approval-sequence contract assumes the approval rides the transport history,
+  which doesn't compose with the DB-hydration loop.
 - The answer arrives on the **next request**: the trailing assistant message now carries the tool
   part in `output-available` state (or an approval response). Trigger "resume": the last client
   message is an assistant whose tool calls match server-created **pending actions**.
@@ -105,7 +111,7 @@ tool chunks so `useChat` exposes typed tool parts natively:
 
 Server table `pending_actions { id (=toolCallId), threadId, userId, messageId, kind, tool,
 argsJson, createdAt, expiresAt, consumedAt }`, written when the asking assistant row is persisted
-(`kind: "tool"` today; `"approval"` reserved — see status above):
+(`kind: "tool"` = interactive asks; `kind: "approval"` = MCP-tool approvals, below):
 
 - On the next request, every tool output in the trailing assistant message must match an
   unconsumed, unexpired row **for this user + thread** → consumed, and the answer is overlaid
@@ -117,11 +123,49 @@ argsJson, createdAt, expiresAt, consumedAt }`, written when the asking assistant
 - `interactive: false` never offers the ask tools nor creates pending rows; answers to rows that
   exist (created while interactive) still gate normally.
 
-## Resume streams (P3, optional)
+#### MCP-tool approvals (`kind: "approval"`, issue #32)
 
-In-process buffer (`consumeSseStream`) keyed by thread; a client reconnect with no new turn
-reattaches and replays. **Single-instance constraint** (matches the compose topology) — documented,
-not solved as a distributed system.
+With `mcp.requireToolApprovals` on (Settings → Tools), every MCP call gates BEFORE the bridge:
+`execute()` returns the placeholder `[pending user approval — …]` (the model is told not to
+retry; a same-turn retry just gets `…already requested…` without re-opening the request), the
+`mcp_approval` tool part streams as above, and the persisted `meta.tools` record carries
+`{approval: true, callId}` — at persist time that opens the `kind:"approval"` row (tool = the
+qualified `mcp__<server>__<tool>` name, args = the verbatim call).
+
+The verdict resumes like an ask; the RESUME request then **executes the deferred tool itself**
+and overlays the REAL output (or `[denied by user]`, the expiry string, or the tool-vanished
+string) onto the stored round — the model sees one clean MCP exchange under the original
+tool_call id, with no re-call and no approval protocol inside the model loop. A resume carrying
+only approval answers never builds the toolset unless a verdict actually needs it (lazy).
+Non-promptable surfaces (`interactive: false`) get a hard `[blocked: …]` tool result instead —
+gated tools are never silently executed there. The `/v1` compat endpoint has no client channel
+and is unaffected by the setting (documented limitation).
+
+## Resume streams (issue #33)
+
+Generation is **decoupled from the response connection**. `buildChatResponse` opens a replay hub
+(`lib/chat/replay.ts`) keyed by `(userId, threadId)`: every SSE frame of the turn is buffered and
+fanned out to any number of views. The original `POST /api/chat` response is just one view, so:
+
+- **A client disconnect no longer kills the turn.** Closing/reloading the tab unsubscribes its
+  view; generation runs to completion server-side and the assistant row persists normally (the busy
+  gate stays claimed until then — a second send still gets `409 busy`).
+- **Reattach:** `GET /api/chat/[threadId]/stream` (the SDK's default `reconnectToStream` URL)
+  returns the hub view — a full replay from frame zero (matching `resumeStreamIsReplay`), then
+  live frames until the turn ends. `204` = nothing in flight (the SDK's clean no-resume signal).
+  Ownership is implicit: the hub key is the authenticated user id, so another user's thread id
+  matches nothing (204, not a 404 oracle). The web client calls `resumeStream()` after loading a
+  thread whose `GET /api/threads/[id]` reports `thread.generating: true`.
+- **Explicit stop:** because a gone view is not a stop, the Stop button must tell the server —
+  `POST /api/chat/stop { id }` aborts the turn exactly like the old disconnect path (partial row
+  persists as `aborted: true`, gate releases, `200`; `404` when idle). Before the first `data-thread`
+  arrives there is no id to target, so the turn finishes server-side and surfaces on reload.
+
+Frames are pre-encoded SSE strings byte-identical to `JsonToSseTransformStream` (`data: {json}\n\n`,
+closed by `data: [DONE]\n\n`), with `: stream-open` / `: keep-alive` comment pings on the heartbeat,
+so `DefaultChatTransport.processResponseStream` parses hub views unchanged. **Single-instance
+constraint** (process-local registry, same as the busy gate — matches the compose topology), and a
+fan-out cap per hub (extra reattaches get 204). The `/v1` compat endpoint is unaffected (no hub).
 
 ## Error codes
 
