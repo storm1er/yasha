@@ -9,7 +9,7 @@ import { messages, threadSummaries, threads } from "@/lib/db/schema";
 import { getSettingInt } from "@/lib/settings";
 import { completeOnce, type JobHandler } from "@/lib/jobs/worker";
 import { outputLanguageFor } from "@/lib/user-locale";
-import { QUOTED_DATA_LINE, buildDatedTranscript, neutralizedBlock, outputLanguageLine } from "./transcript";
+import { QUOTED_DATA_LINE, assistantTranscriptText, buildDatedTranscript, neutralizedBlock, outputLanguageLine } from "./transcript";
 
 const MAX_PER_RUN = 80;
 
@@ -67,7 +67,13 @@ export const handleThreadSummary: JobHandler = async ({ job, cfg, signal, addCom
   if (!windowFloor) return { skipped: "short_thread", windowMessages };
 
   const rows = db
-    .select({ id: messages.id, role: messages.role, content: messages.content, createdAt: messages.createdAt })
+    .select({
+      id: messages.id,
+      role: messages.role,
+      content: messages.content,
+      metaJson: messages.metaJson,
+      createdAt: messages.createdAt,
+    })
     .from(messages)
     .where(
       and(
@@ -84,7 +90,17 @@ export const handleThreadSummary: JobHandler = async ({ job, cfg, signal, addCom
 
   const msgTrunc = getSettingInt("memory.transcript.msgTruncChars");
   const transcriptCap = getSettingInt("memory.transcript.capChars");
-  const transcript = buildDatedTranscript(rows, msgTrunc, transcriptCap);
+  // Same view as extraction: interactive asks render their gate-validated
+  // answers; MCP rounds (and their paraphrasing prose) stay collapsed.
+  const transcript = buildDatedTranscript(
+    rows.map((r) => ({
+      role: r.role,
+      content: r.role === "assistant" ? assistantTranscriptText(r.content, r.metaJson) : r.content,
+      createdAt: r.createdAt,
+    })),
+    msgTrunc,
+    transcriptCap,
+  );
 
   const raw = await completeOnce({
     model: cfg.model,

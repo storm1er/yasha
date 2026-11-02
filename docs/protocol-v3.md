@@ -1,10 +1,22 @@
 # Protocol v3 — the stock AI SDK chat contract
 
-Status: **design locked (issue #21)** — supersedes decision **D1** (server-authoritative request
-body) of the M0–M5 migration. Greenfield cutover: no dual protocol, no migration. This document
-is the normative contract; `tests/fixtures/protocol-v3.jsonl` is the wire-conformance fixture
-(gated by `tests/protocol-v3.test.ts` on the web side; the Android parser tests use the same
-fixtures).
+Status: **implemented (issue #21, P0–P4 + interactive P2/P3)** — supersedes decision **D1**
+(server-authoritative request body) of the M0–M5 migration. Greenfield cutover: no dual protocol,
+no migration. This document is the normative contract; `tests/fixtures/protocol-v3.jsonl` is the
+wire-conformance fixture (gated by `tests/protocol-v3.test.ts` on the web side; the Android parser
+tests use the same fixtures).
+
+### Implementation status
+
+| Slice | State | Notes |
+|---|---|---|
+| P0 spec + fixtures | shipped | this file + `tests/fixtures/protocol-v3.jsonl` |
+| P1 request contract (parse, reconcile, id idempotency, `interactive`) | shipped | `lib/chat/request-v3.ts` |
+| P2 pending-actions gate | shipped | `pending_actions` table, `lib/chat/interactive.ts` |
+| P3 interactive tools (`ask_choice`/`confirm_action`) + resume | shipped | web renders + answers; Android sends `interactive: false` |
+| P3 resume-stream reattach | **not built** | optional; see "Resume streams" below |
+| MCP-tool **approvals** (`tool-approval-request` / `experimental_toolApprovalSecret`) | **deferred** | the gate + overlay machinery here is the substrate; `pending_actions.kind` is reserved. The SDK's per-request message-sequence approval contract doesn't compose with the DB-hydration loop yet — tracked as a follow-up on #21 |
+
 
 ## Principles
 
@@ -42,9 +54,11 @@ fixtures).
 
 Rules:
 
-- `messages` is a non-empty array; the **last element has role `user`** (P2 adds the resume
-  trigger below). Every id is a string ≤ 64 chars; the trailing id is new (persisted with this
-  request) or matches the failed tail turn (retry, replaces it).
+- `messages` is a non-empty array; the **last element has role `user`** ("send") — or role
+  `assistant` carrying ≥1 tool part in `output-available` state ("resume", shipped with P2/P3:
+  the payload is the validated tool outputs, no new user row). Every id is a string ≤ 64 chars;
+  the trailing (send) id is new (persisted with this request) or matches the failed tail turn
+  (retry, replaces it).
 - All **non-trailing user-role ids must exist in the thread** — else `409
   invalid_history`. Their content is ignored (hydrated from the DB).
   Assistant-role echoes are **tolerated ghosts** (a failed turn keeps its
@@ -74,16 +88,19 @@ tool chunks so `useChat` exposes typed tool parts natively:
 
 ### Pending actions (P2)
 
-Server table `pending_actions { id, threadId, userId, toolCallId, kind: approval|tool, argsDigest,
-expiresAt, consumedAt }`, written before the stream ends whenever a client answer is required:
+Server table `pending_actions { id (=toolCallId), threadId, userId, messageId, kind, tool,
+argsJson, createdAt, expiresAt, consumedAt }`, written when the asking assistant row is persisted
+(`kind: "tool"` today; `"approval"` reserved — see status above):
 
-- On the next request, every tool output / approval response in the trailing assistant message
-  must match an unconsumed, unexpired row **for this user + thread** → consumed, and the result is
-  overlaid onto the stored assistant turn's tool records (history converges for later turns).
-- Forged/unknown/expired → the model receives a tool error result (`expired` / `invalid`), the
-  conversation continues, the pending row closes. A user can never be permanently stalled.
-- `interactive: false` never creates pending rows; tools requiring approval return a tool error
-  (`approval_unavailable`) on such requests.
+- On the next request, every tool output in the trailing assistant message must match an
+  unconsumed, unexpired row **for this user + thread** → consumed, and the answer is overlaid
+  onto the stored assistant turn's `meta.tools` record (`answered: true`) so history converges
+  for later turns.
+- Expired → row closes and the model sees `[no answer — the request expired]`; already consumed
+  or unknown/foreign rows are ignored (a replay can never clobber a stored answer). A resume
+  where **nothing** matches is `409 invalid_history` (no generation is spent on it).
+- `interactive: false` never offers the ask tools nor creates pending rows; answers to rows that
+  exist (created while interactive) still gate normally.
 
 ## Resume streams (P3, optional)
 

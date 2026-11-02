@@ -1,17 +1,20 @@
 // /api/chat stream assembly on the AI SDK (M2, docs/AI-SDK-MIGRATION-PLAN.MD).
 //
-// Transport contract (protocol v2, UI message stream):
+// Transport contract (protocol v3 response stream, docs/protocol-v3.md §Response):
 //   data-thread {threadId}        custom part, first frame of every turn
 //   text-start / text-delta / text-end  assistant text (per-step remapped ids)
 //   data-tool   ToolEvent         live tool-chip state machine (mirrors v1);
 //               terminal events may carry `card` (issue #16 generative UI —
 //               lib/chat/generative.ts), persisted on meta.tools entries
+//   tool-input-start/delta/available    interactive asks (ask_choice /
+//               confirm_action) forwarded as STANDARD tool chunks; the client
+//               answers via useChat's addToolOutput (docs/protocol-v3.md)
 //   data-error  {code}            terminal failure (timeout / upstream_* / empty_response)
 //   [DONE]      by createUIMessageStreamResponse; keepAliveMs carries the
 //               idle-proxy heartbeat (replaces the hand-rolled `: ping`).
 //
 // Deliberately dropped at the seam: reasoning parts (AGENTS rule 1 — only
-// content is forwarded/persisted), SDK tool-* parts (chips ride data-tool),
+// content is forwarded/persisted), MCP tool-* chunks (chips ride data-tool),
 // and start/finish bookkeeping. Persistence semantics are unchanged from v1:
 // success → assistant row; mid-stream death with output → partial row
 // (`aborted: true`); no output → error marked on the user message.

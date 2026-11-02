@@ -72,15 +72,44 @@ export function neutralizedBlock(text: string): string {
  */
 export const TOOL_OUTPUT_PLACEHOLDER = "[tool calls ran here — tool output hidden from this transcript]";
 
-/** True when a stored assistant meta_json carries tool-round records. */
-export function hasToolOutput(metaJson: string | null): boolean {
-  if (!metaJson) return false;
-  try {
-    const meta = JSON.parse(metaJson) as { tools?: unknown };
-    return Array.isArray(meta.tools) && meta.tools.length > 0;
-  } catch {
-    return false;
+/** Protocol v3 interactive record inside meta.tools (lib/chat/interactive.ts). */
+type InteractiveRecord = { client?: boolean; name?: string; args?: string; result?: string; answered?: boolean };
+
+/**
+ * Transcript view of a stored assistant row:
+ *  - interactive ask/answer pairs render as LABELED dialogue: the answer was
+ *    validated against a server-created pending action (this user + thread),
+ *    so it carries the user's own trust — unlike opaque tool output;
+ *  - a turn with a non-interactive (MCP) round collapses to the placeholder
+ *    INCLUDING its prose: assistant text on a tool turn may paraphrase the
+ *    hidden untrusted output;
+ *  - otherwise the text rides along unchanged.
+ */
+export function assistantTranscriptText(content: string, metaJson: string | null): string {
+  let records: InteractiveRecord[] = [];
+  if (metaJson) {
+    try {
+      const meta = JSON.parse(metaJson) as { tools?: InteractiveRecord[] };
+      records = Array.isArray(meta.tools) ? meta.tools : [];
+    } catch {
+      /* meta is always JSON written by persist(); anything else behaves as no-tools */
+    }
   }
+  const asks = records.filter((r) => r.client);
+  const opaque = records.length - asks.length;
+  let out = opaque > 0 ? TOOL_OUTPUT_PLACEHOLDER : content;
+  for (const ask of asks) {
+    let question = "";
+    try {
+      const input = JSON.parse(ask.args || "{}") as { question?: unknown };
+      question = typeof input.question === "string" ? input.question : "";
+    } catch {
+      /* unparsable args: render the answer only */
+    }
+    const answer = ask.answered && ask.result ? ask.result : "(no answer)";
+    out += ` [asked "${question}" — user answered "${answer}"]`;
+  }
+  return out;
 }
 
 /** Standing line added to every job prompt and the recall block. */

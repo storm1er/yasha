@@ -74,7 +74,8 @@ export type ChatMessageMeta = {
   turnError?: string;
 };
 
-/** Custom UI-stream parts of protocol v2 (lib/chat/stream.ts). */
+/** Custom UI-stream parts (lib/chat/stream.ts; protocol v3 adds STANDARD
+ *  tool-* chunks for interactive asks — not custom parts). */
 export type YashaDataParts = {
   thread: { threadId: string };
   tool: ToolChip;
