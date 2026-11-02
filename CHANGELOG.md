@@ -5,6 +5,15 @@ generated automatically by CI from Conventional Commits landing on `main`
 ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)).
 
+## [0.2.10] - 2026-11-02
+
+### Features
+- **mcp:** User-approved MCP tool calls (issue #32) (3885af1)
+- **chat:** Resume-stream reattach — detached generation + replay hub (issue #33) (863fdde)
+
+### Bug Fixes
+- **chat:** Mark stored text parts done — resume auto-send fires after reload (e51ce35)
+
 ## [0.2.9] - 2026-11-02
 
 ### Features
