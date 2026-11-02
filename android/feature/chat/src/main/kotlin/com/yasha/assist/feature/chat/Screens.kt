@@ -176,7 +176,7 @@ fun YashaAppRoot(
     when {
         state.checkingSession -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         !state.signedIn -> LoginScreen(vm, state)
-        showSettings -> SettingsScreen(svm, onBack = { showSettings = false })
+        showSettings -> SettingsScreen(svm, vm, onBack = { showSettings = false })
         else -> Home(vm, state, onSettings = { showSettings = true })
     }
 }
@@ -238,6 +238,7 @@ private fun Home(vm: ChatViewModel, state: ChatUiState, onSettings: () -> Unit) 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var pendingDelete by remember { mutableStateOf<ThreadRowDto?>(null) }
+    var updateDialog by remember { mutableStateOf(false) }
     val errCode = state.error
     if (errCode != null) {
         val errMsg = stringResource(ErrorStrings.messageRes(errCode))
@@ -269,6 +270,15 @@ private fun Home(vm: ChatViewModel, state: ChatUiState, onSettings: () -> Unit) 
                     // session preserved, banner + background/auto retry instead
                     // of the login form.
                     if (state.offline) OfflineBanner(vm)
+                    // Issue #34: newer server build → passive banner; the tap
+                    // opens the (Phase A) guidance dialog.
+                    state.updateVersionName?.let { v ->
+                        UpdateBanner(
+                            versionName = v,
+                            onUpdate = { updateDialog = true },
+                            onLater = { vm.dismissUpdate() },
+                        )
+                    }
                 }
             },
         ) { pad ->
@@ -293,6 +303,49 @@ private fun Home(vm: ChatViewModel, state: ChatUiState, onSettings: () -> Unit) 
                 TextButton(onClick = { pendingDelete = null }) { Text(stringResource(R.string.cancel)) }
             },
         )
+    }
+    // Phase A of the update channel (issue #34): one-tap install lands with
+    // Phase B; until then the dialog explains the web re-download path.
+    if (updateDialog) {
+        AlertDialog(
+            onDismissRequest = { updateDialog = false },
+            title = { Text(stringResource(R.string.update_available_title)) },
+            text = { Text(stringResource(R.string.update_dialog_body)) },
+            confirmButton = {
+                TextButton(onClick = { updateDialog = false }) {
+                    Text(stringResource(R.string.update_action), color = MaterialTheme.colorScheme.primary)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { updateDialog = false; vm.dismissUpdate() }) {
+                    Text(stringResource(R.string.update_later))
+                }
+            },
+        )
+    }
+}
+
+// Update-available banner (issue #34): passive on auto-check; "Update" opens the
+// guidance dialog (the in-app installer rides this in Phase B).
+@Composable
+private fun UpdateBanner(versionName: String, onUpdate: () -> Unit, onLater: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.secondaryContainer)
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            stringResource(R.string.update_available_fmt, versionName),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSecondaryContainer,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(onClick = onUpdate) {
+            Text(stringResource(R.string.update_action), style = MaterialTheme.typography.labelLarge)
+        }
+        TextButton(onClick = onLater) {
+            Text(stringResource(R.string.update_later), style = MaterialTheme.typography.labelLarge)
+        }
     }
 }
 

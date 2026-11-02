@@ -16,6 +16,7 @@ data class YashaEndpoints(val baseUrl: String) {
     val adminMcp get() = "$base/api/admin/mcp"
     val audioConfig get() = "$base/api/audio/config"
     val attachmentLimits get() = "$base/api/attachment-limits"
+    val appVersion get() = "$base/api/app/version"
     fun messageTranscribe(id: String) = "$base/api/chat/messages/$id/transcribe"
 
     companion object {

@@ -111,6 +111,11 @@ data class AttachmentLimitsDto(
     val maxUploadBytes: Long = 20971520,
 )
 
+// GET /api/app/version (issue #34 Phase A): the stamp the server would build.
+// Compared against BuildConfig.VERSION_CODE; newer → update banner.
+@Serializable
+data class AppVersionDto(val versionCode: Int, val versionName: String)
+
 // SSE events emitted by POST /api/chat (see app/api/chat/route.ts buildStream).
 sealed interface ChatEvent {
     data class ThreadId(val id: String) : ChatEvent

@@ -83,7 +83,7 @@ import com.yasha.assist.core.net.AppLocale
 import com.yasha.assist.core.net.McpToolDto
 
 @Composable
-fun SettingsScreen(vm: SettingsViewModel, onBack: () -> Unit) {
+fun SettingsScreen(vm: SettingsViewModel, cvm: ChatViewModel, onBack: () -> Unit) {
     val state by vm.state.collectAsState()
     val palette = LocalYashaPalette.current
     val snackbar = remember { SnackbarHostState() }
@@ -181,7 +181,7 @@ fun SettingsScreen(vm: SettingsViewModel, onBack: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 when (tab) {
-                    "general" -> GeneralTab(vm, state)
+                    "general" -> GeneralTab(vm, state, cvm)
                     "security" -> SecurityTab(vm, state)
                     "memory" -> MemoryTab(vm, state)
                     "backend" -> if (state.isAdmin) LemonadeTab(vm, state)
@@ -378,7 +378,7 @@ fun ConfirmDialog(title: String, body: String, confirmLabel: String, onConfirm: 
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun GeneralTab(vm: SettingsViewModel, state: SettingsUiState) {
+private fun GeneralTab(vm: SettingsViewModel, state: SettingsUiState, cvm: ChatViewModel) {
     // Account language: drives this app AND server-generated content. Never
     // the device locale (account wins; null ⇒ default en).
     SectionCard(stringResource(R.string.language_title), stringResource(R.string.language_intro)) {
@@ -518,6 +518,32 @@ private fun GeneralTab(vm: SettingsViewModel, state: SettingsUiState) {
     }
     SectionCard(stringResource(R.string.tab_phone), stringResource(R.string.phone_intro)) {
         PhoneSettingsBody()
+    }
+
+    // Update channel (issue #34, Phase A): installed stamp + manual check.
+    // The check result reuses the chat view-model (auto-check runs on entry).
+    SectionCard(stringResource(R.string.update_card_title), stringResource(R.string.update_card_intro)) {
+        val chat by cvm.state.collectAsState()
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                stringResource(R.string.update_installed_fmt, chat.installedVersionName, chat.installedVersionCode),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            OutlinedButton(onClick = { cvm.checkForUpdates() }) {
+                Text(stringResource(R.string.update_check_button))
+            }
+            chat.updateCheckResult?.let { r ->
+                Text(
+                    when {
+                        r == "up_to_date" -> stringResource(R.string.update_up_to_date)
+                        r.startsWith("error:") -> stringResource(ErrorStrings.messageRes(r.removePrefix("error:")))
+                        else -> stringResource(R.string.update_found_fmt, r)
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
     }
 }
 

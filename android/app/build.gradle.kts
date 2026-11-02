@@ -19,8 +19,8 @@ android {
         applicationId = "com.yasha.assist"
         minSdk = 30
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0-M0"
+        versionCode = 2 // bump on every app-visible release (android/README.md §Versioning)
+        versionName = "0.2.9" // follows git tags (CHANGELOG/cliff.toml), not package.json
         buildConfigField("String", "YASHA_SERVER_URL", bakedProp("yashaServerUrl", ".-:/"))
         buildConfigField("String", "YASHA_SESSION_TOKEN", bakedProp("yashaSessionToken", "-_./+="))
         buildConfigField("String", "YASHA_USERNAME", bakedProp("yashaUsername", "._-"))

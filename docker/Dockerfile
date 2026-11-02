@@ -42,6 +42,11 @@ ENV ANDROID_HOME=/opt/android-sdk-linux \
 # ── Gradle cache pre-warm (bakes deps so per-user builds skip cold downloads) ──
 FROM toolchain AS apk-prewarm
 COPY android/ /opt/yasha-android/
+# Version stamp for the app update channel (issue #34): `VERSION` = "<code>\t<name>" derived
+# from the gradle file, so lib/app-version.ts never parses Kotlin DSL at runtime.
+RUN cd /opt/yasha-android \
+    && printf '%s\t%s\n' "$(grep -oP 'versionCode = \K[0-9]+' app/build.gradle.kts)" "$(grep -oP 'versionName = \"\K[^\"]+' app/build.gradle.kts)" > VERSION \
+    && grep -qE '[0-9]+[[:space:]]+[0-9][^[:space:]]*' VERSION
 # Retries: a flaky link (mid-handshake resets) must not kill the whole layer —
 # each attempt resumes from Gradle's cache, so bounded retries eventually converge.
 RUN ok=0; for i in 1 2 3 4 5 6 7 8; do gradle --no-daemon -p /opt/yasha-android assembleDebug && { ok=1; break; }; sleep 5; done; [ "$ok" = 1 ] \

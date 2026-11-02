@@ -33,6 +33,10 @@ class SessionStore(context: Context) : SessionAccess {
         get() = prefs.getString(KEY_LOCALE, null)
         set(value) = prefs.edit().putString(KEY_LOCALE, value).apply()
 
+    override var dismissedUpdateCode: Int
+        get() = prefs.getInt(KEY_DISMISSED_UPDATE, 0)
+        set(value) = prefs.edit().putInt(KEY_DISMISSED_UPDATE, value).apply()
+
     override fun signedIn() = !token.isNullOrEmpty()
 
     // One-shot injection of the credentials baked into a per-user APK built by
@@ -67,6 +71,7 @@ class SessionStore(context: Context) : SessionAccess {
         private const val KEY_EMAIL = "email"
         private const val KEY_LOCALE = "locale"
         private const val KEY_SEEDED = "seeded"
+        private const val KEY_DISMISSED_UPDATE = "dismissed_update_code"
 
         fun isSessionCookie(name: String) = name == COOKIE_NAME || name == SECURE_COOKIE_NAME
 

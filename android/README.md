@@ -49,6 +49,14 @@ Keep the keystore + passwords **outside the repo**; provide via env
 (`YASHA_KEYSTORE`, `YASHA_KEYSTORE_PASSWORD`, `YASHA_KEY_ALIAS`, `YASHA_KEY_PASSWORD`)
 and wire them into a `signingConfig` in `app/build.gradle.kts` when M7 packaging starts.
 
+## Versioning (issue #34)
+
+`app/build.gradle.kts` carries the version stamp. On **every app-visible release** bump
+`versionCode` (monotonic integer) and set `versionName` to the release git tag
+(`v0.2.9` → `"0.2.9"`) — the app compares `versionCode` against the server's
+`GET /api/app/version`, which reads the stamp from the APK source tree (Docker `VERSION`
+file, gradle-file fallback in dev). `versionName` follows **git tags**, not `package.json`.
+
 ## Assistant role (M2)
 
 Granting the default-assistant role works through the **system default-app picker**
