@@ -401,6 +401,10 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
           else await markFailed(state.errorCode);
         } else if (aborted) {
           if (state.assistantText.length > 0) await persist({ aborted: true });
+          // No interactive exemption here: the SDK emits tool-call parts only
+          // when the upstream stream CLOSES, so an aborted stream never has
+          // ask records to persist. A question cut off mid-stream is retried
+          // as a fresh turn (its answers gate 409 with nothing stored).
         } else if (state.assistantText.length === 0 && !toolRecords.some((r) => r.client)) {
           await markFailed("empty_response");
         } else {

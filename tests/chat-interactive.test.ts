@@ -11,9 +11,9 @@ import { ensureReady } from "@/lib/db";
 import { messages, pendingActions, threads } from "@/lib/db/schema";
 import { releaseGeneration } from "@/lib/provider/gate";
 import { EXPIRED_ANSWER, INTERACTIVE_SERVER, INTERACTIVE_TOOL_DEFS, INTERACTIVE_TOOLS, NO_ANSWER, consumePendingAction, createPendingActions, isInteractiveToolName, overlayToolResults, patchToolResults } from "@/lib/chat/interactive";
-import { adminUser, callRoute, sessionId, signUp, type TestUser } from "./support/app";
+import { adminUser, callRoute, makeRequest, sessionId, signUp, type TestUser } from "./support/app";
 import { db, setFastModel, setSetting } from "./support/db";
-import { mockLemonade, modelsResponse, sseChatCompletion, type LemonadeMock } from "./support/lemonade";
+import { bindStream, mockLemonade, modelsResponse, sseChatCompletion, streamResponse, type LemonadeMock } from "./support/lemonade";
 import { drainUi, uiData, uiText, uiThread } from "./support/ui-stream";
 
 const CHAT = "/v1/chat/completions";
@@ -282,8 +282,45 @@ describe("ask flow", () => {
     expect(pending[0]).toMatchObject({ id: "call-ask-9", threadId, messageId: asst.id, tool: "ask_choice", kind: "tool" });
   });
 
-  it("interactive:false: the model never sees the ask tools", async () => {
-    const mock = mockRoute(() => sseChatCompletion("plain"));
+  it("client aborts mid-ask: nothing persists (the question was never closed)", async () => {
+    // The SDK emits tool-call parts only when the upstream stream closes, so
+    // an aborted ask stores neither a row nor a pending action — answers to
+    // it gate out (409) and the user retries as a fresh turn.
+    const stream = streamResponse();
+    const mock = mockLemonade();
+    mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
+    bindStream(mock, stream);
+    const ac = new AbortController();
+    const res = await chatRoute.POST(
+      makeRequest({
+        method: "POST",
+        path: "/api/chat",
+        cookie: user.cookie,
+        signal: ac.signal,
+        json: { id: "new", messages: [{ id: "u-abort-ask", role: "user", parts: [{ type: "text", text: "pick a day" }] }] },
+      })
+    );
+    stream.pushPayload({
+      choices: [
+        { index: 0, delta: { tool_calls: [{ index: 0, id: "call-abort", type: "function", function: { name: "ask_choice", arguments: '{"question":' } }] } },
+      ],
+    });
+    const reader = res.body!.getReader();
+    const dec = new TextDecoder();
+    let seen = "";
+    for (let i = 0; i < 40 && !seen.includes("tool-input-delta"); i++) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      seen += dec.decode(chunk.value, { stream: true });
+    }
+    expect(seen).toContain("tool-input-delta"); // deltas streamed…
+    ac.abort(); // …then the connection died before the call completed
+    await new Promise((r) => setTimeout(r, 50));
+    expect(db.select().from(messages).where(eq(messages.role, "assistant")).all()).toHaveLength(0);
+    expect(db.select().from(pendingActions).all()).toHaveLength(0);
+  });
+
+  it("interactive:false: the model never sees the ask tools", async () => {    const mock = mockRoute(() => sseChatCompletion("plain"));
     const res = await post({
       id: "new",
       interactive: false,
