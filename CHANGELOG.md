@@ -5,6 +5,12 @@ generated automatically by CI from Conventional Commits landing on `main`
 ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)).
 
+## [0.2.11] - 2026-11-02
+
+### Features
+- **android:** Mirror admin attachment caps via /api/attachment-limits (issue #15) (c640978)
+- **android:** Version awareness for self-updates (#34, Phase A) (de607f1)
+
 ## [0.2.10] - 2026-11-02
 
 ### Features
