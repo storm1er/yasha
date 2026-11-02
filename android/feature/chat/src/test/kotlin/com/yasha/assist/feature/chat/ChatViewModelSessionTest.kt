@@ -2,6 +2,7 @@ package com.yasha.assist.feature.chat
 
 import com.yasha.assist.core.audio.MicRecorder
 import com.yasha.assist.core.net.ApiResult
+import com.yasha.assist.core.net.AttachmentLimitsDto
 import com.yasha.assist.core.net.AudioConfigDto
 import com.yasha.assist.core.net.ChatEvent
 import com.yasha.assist.core.net.ChatRequestBody
@@ -58,6 +59,8 @@ private class FakeChatApi(probes: List<SessionProbe>) : YashaChatApi {
     override suspend fun openThread(id: String): ApiResult<ThreadDetailDto> = ApiResult.Err("not_faked")
     override suspend fun deleteThread(id: String): ApiResult<Unit> = ApiResult.Ok(Unit)
     override suspend fun audioConfig(): ApiResult<AudioConfigDto> = ApiResult.Err("not_faked")
+    var limits: ApiResult<AttachmentLimitsDto> = ApiResult.Err("not_faked")
+    override suspend fun attachmentLimits(): ApiResult<AttachmentLimitsDto> = limits
     override suspend fun retryTranscribe(messageId: String): ApiResult<Boolean> = ApiResult.Err("not_faked")
     override fun chatStream(body: ChatRequestBody): Flow<ChatEvent> = emptyFlow()
 }
@@ -166,5 +169,25 @@ class ChatViewModelSessionTest {
         assertEquals(0, api.probeCount)
         assertFalse(vm.state.value.signedIn)
         assertFalse(vm.state.value.offline)
+    }
+
+    // Issue #15: the composer mirrors the admin-configured attachment caps.
+    @Test
+    fun `refresh adopts the server attachment cap`() {
+        val api = FakeChatApi(listOf(SessionProbe.Valid))
+        api.limits = ApiResult.Ok(AttachmentLimitsDto(maxImagesPerMessage = 1, maxWindowImages = 8, maxUploadBytes = 4096))
+        val vm = newVm(FakeStore(), api)
+        vm.start()
+        vm.refresh()
+        assertEquals(1, vm.state.value.maxAttachments)
+    }
+
+    @Test
+    fun `attachment cap fetch failure keeps the client default`() {
+        val api = FakeChatApi(listOf(SessionProbe.Valid)) // limits stays Err("not_faked")
+        val vm = newVm(FakeStore(), api)
+        vm.start()
+        vm.refresh()
+        assertEquals(ChatUiState.MAX_ATTACHMENTS, vm.state.value.maxAttachments)
     }
 }

@@ -101,6 +101,16 @@ data class AudioConfigDto(
 @Serializable
 data class TranscribeQueuedDto(val queued: Boolean = false)
 
+// GET /api/attachment-limits (issue #15 parity): the admin-configured caps the
+// composer mirrors (defaults = lib/settings.ts). maxWindowImages is applied
+// server-side when the window is hydrated — the app only consumes the other two.
+@Serializable
+data class AttachmentLimitsDto(
+    val maxImagesPerMessage: Int = 4,
+    val maxWindowImages: Int = 8,
+    val maxUploadBytes: Long = 20971520,
+)
+
 // SSE events emitted by POST /api/chat (see app/api/chat/route.ts buildStream).
 sealed interface ChatEvent {
     data class ThreadId(val id: String) : ChatEvent

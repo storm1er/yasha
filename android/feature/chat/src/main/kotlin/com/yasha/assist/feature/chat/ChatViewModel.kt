@@ -87,10 +87,14 @@ data class ChatUiState(
     val listening: Boolean = false,
     val listenSeconds: Int = 0,
     val micError: String? = null, // "mic" | "too_short" | "too_large", mapped in the UI
+    // Server-side caps fetched on refresh (issue #15 parity with the web
+    // composer); the MAX_* constants are only the pre-fetch fallback.
+    val maxAttachments: Int = MAX_ATTACHMENTS,
 
 ) {
     companion object {
         const val MAX_ATTACHMENTS = 4 // chat.maxImagesPerMessage default
+        const val MAX_UPLOAD_BYTES = 20L * 1024 * 1024 // chat.maxUploadBytes default
     }
 }
 
@@ -225,6 +229,15 @@ class ChatViewModel(
                 }
                 is ApiResult.Err -> _state.update { it.copy(audioEnabled = false) }
             }
+            // Admin-configured attachment caps; an error keeps the client defaults
+            // (same posture as the web composer).
+            when (val r = client.attachmentLimits()) {
+                is ApiResult.Ok -> {
+                    attachmentMaxFileBytes = r.value.maxUploadBytes
+                    _state.update { it.copy(maxAttachments = r.value.maxImagesPerMessage.coerceAtLeast(0)) }
+                }
+                is ApiResult.Err -> Unit
+            }
         }
     }
 
@@ -232,6 +245,7 @@ class ChatViewModel(
     // finished WAV rides the chat request as input_audio (no transcription
     // hop). Captions arrive later from the background caption job.
     private var audioMaxDataUrlBytes = 8_388_608L
+    private var attachmentMaxFileBytes = ChatUiState.MAX_UPLOAD_BYTES
     private var lastSendHadAudio = false
     private var captionJob: Job? = null
 
@@ -399,7 +413,7 @@ class ChatViewModel(
         _state.update {
             it.copy(
                 input = text,
-                attachments = (imgs + it.attachments).take(ChatUiState.MAX_ATTACHMENTS),
+                attachments = (imgs + it.attachments).take(it.maxAttachments),
             )
         }
     }
@@ -411,10 +425,10 @@ class ChatViewModel(
             _state.update { it.copy(error = "no_vision_model") }
             return
         }
-        when (val r = AttachmentEncoder.encode(bytes, mime)) {
+        when (val r = AttachmentEncoder.encode(bytes, mime, attachmentMaxFileBytes)) {
             is AttachmentEncoder.Result.Err -> _state.update { it.copy(error = r.code) }
             is AttachmentEncoder.Result.Ok -> _state.update {
-                if (it.attachments.size >= ChatUiState.MAX_ATTACHMENTS) it.copy(error = "attachment_too_many")
+                if (it.attachments.size >= it.maxAttachments) it.copy(error = "attachment_too_many")
                 else it.copy(attachments = it.attachments + r.dataUrl)
             }
         }

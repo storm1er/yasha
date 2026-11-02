@@ -23,9 +23,9 @@ object AttachmentEncoder {
         data class Err(val code: String) : Result // "unsupported" | "too_large"
     }
 
-    fun encode(bytes: ByteArray, mime: String?): Result {
+    fun encode(bytes: ByteArray, mime: String?, maxFileBytes: Long = MAX_FILE_BYTES): Result {
         if (mime !in ACCEPTED) return Result.Err("unsupported")
-        if (bytes.size > MAX_FILE_BYTES) return Result.Err("too_large")
+        if (bytes.size > maxFileBytes) return Result.Err("too_large")
         return try {
             // ByteBuffer overload: API 28+ (the ByteArray overload is API 31, above minSdk 30).
             val source = ImageDecoder.createSource(java.nio.ByteBuffer.wrap(bytes))
