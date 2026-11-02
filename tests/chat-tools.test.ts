@@ -527,9 +527,10 @@ describe("chat loop (MCP tools → AI SDK rounds)", () => {
     });
     setCurrentHeaders(req.headers);
     const res = await chatRoute.POST(req);
-    const chunks = await readUi(res, 6); // data-thread, text*, tool running, tool done
+    const chunks = await readUi(res, 7); // data-thread, start-step, text*, tool running, tool done
     expect(chunks.map((c) => c.type)).toEqual([
       "data-thread",
+      "start-step",
       "text-start",
       "text-delta",
       "text-end",

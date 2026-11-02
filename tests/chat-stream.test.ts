@@ -515,8 +515,8 @@ describe("chat upstream failures", () => {
     bindStream(mock, stream);
     stream.pushText("first bit");
     const res = await postChat(chatBody());
-    const chunks = await readUi(res, 3); // data-thread, text-start, one delta
-    expect(chunks[2].type).toBe("text-delta");
+    const chunks = await readUi(res, 4); // data-thread, start-step, text-start, one delta
+    expect(chunks[3].type).toBe("text-delta");
     stream.pushText(" more"); // sent while cancelling → write may throw (caught)
     await res.body!.cancel();
     const threadId = uiThread(chunks);

@@ -2,6 +2,8 @@
 //
 // Transport contract (protocol v3 response stream, docs/protocol-v3.md §Response):
 //   data-thread {threadId}        custom part, first frame of every turn
+//   start-step                    step boundary (client step-start parts; keeps
+//               answered tool parts out of the resumed turn's step — see execute)
 //   text-start / text-delta / text-end  assistant text (per-step remapped ids)
 //   data-tool   ToolEvent         live tool-chip state machine (mirrors v1);
 //               terminal events may carry `card` (issue #16 generative UI —
@@ -193,6 +195,12 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
         }
       };
       send({ type: "data-thread", data: { threadId: opts.threadId } });
+      // Step boundary: without it the client sees the whole resumed turn inside
+      // the SAME step as the answered tool parts, and the SDK's
+      // lastAssistantMessageIsCompleteWithToolCalls then auto-fires a duplicate
+      // resume (which the pending gate correctly 409s). start-step closes the
+      // ask's step so the continuation is its own step.
+      send({ type: "start-step" });
 
       const maxRounds = mcpMaxToolRounds();
       let roundsDispatched = 0;
