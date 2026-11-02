@@ -226,6 +226,8 @@
     <string name="tool_args">Arguments</string>
     <string name="tool_result">Result</string>
     <string name="tool_no_result">Waiting for the tool to finish…</string>
+    <string name="gen_ui_prev">Previous slide</string>
+    <string name="gen_ui_next">Next slide</string>
     <string name="tools_title">Tools</string>
     <string name="tools_intro">Let the assistant use external tools (web search) during conversations.</string>
     <string name="tools_follow">Use tools when available</string>

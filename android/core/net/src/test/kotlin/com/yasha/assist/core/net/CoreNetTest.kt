@@ -221,6 +221,7 @@ class AudioDtoTest {
         assertTrue(out.contains("\"parts\":[{\"type\":\"text\",\"text\":\"hi\"}]"))
         assertTrue(Regex("\"messages\":\\[\\{\"id\":\"[0-9a-fA-F-]{36}\"").containsMatchIn(out))
         assertTrue(out.contains("\"interactive\":false"))
+        assertTrue(out.contains("\"cards\":false")) // floaty default; chat screen opts in
         assertTrue(out.contains("\"images\":[\"data:image/png;base64,AAA\"]"))
         assertTrue(out.contains("\"audio\":\"data:audio/wav;base64,BBB\""))
         assertTrue(!out.contains("threadId"))
@@ -232,6 +233,10 @@ class AudioDtoTest {
             .encodeToString(ChatRequestBody.serializer(), onThread)
         assertTrue(outThread.contains("\"id\":\"th-9\""))
         assertTrue(outThread.contains("\"text\":\"\"")) // audio-only turn: empty text part
+        // Card-capable surface (issue 30): cards=true alongside interactive=false.
+        val cardBody = Json { encodeDefaults = true; explicitNulls = false }
+            .encodeToString(ChatRequestBody.serializer(), chatRequestBody(text = "hi", threadId = null, cards = true))
+        assertTrue(cardBody.contains("\"cards\":true"))
     }
 }
 
@@ -397,5 +402,79 @@ class MessageMetaDtoTest {
         )
         assertNull(meta.parts)
         assertEquals(1, meta.tools.size)
+    }
+}
+
+// Tier-1 generative UI on Android (issue 30): data-card chunk mapping,
+// defensive tree parsing and stored meta.cards decoding.
+class GenUiWireTest {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    @Test
+    fun `data-card maps to RenderCard (single node)`() {
+        assertEquals(
+            ChatEvent.RenderCard("c1", listOf(GenUiNode.Text("hi"))),
+            ChatEvents.parse("""{"type":"data-card","data":{"id":"c1","root":{"type":"text","text":"hi"}}}"""),
+        )
+    }
+
+    @Test
+    fun `data-card array root stacks and skips malformed nodes inside`() {
+        val ev = ChatEvents.parse(
+            """{"type":"data-card","data":{"id":"c2","root":[
+               {"type":"text","text":"a"},
+               {"type":"bogus"},
+               {"type":"metric","label":"L","value":7,"trend":"up"}]}}""",
+        ) as ChatEvent.RenderCard
+        assertEquals(
+            listOf(GenUiNode.Text("a"), GenUiNode.Metric("L", "7", null, "up")),
+            ev.nodes,
+        )
+    }
+
+    @Test
+    fun `data-card without id or with nothing parseable maps to null`() {
+        assertNull(ChatEvents.parse("""{"type":"data-card","data":{"root":{"type":"text","text":"x"}}}"""))
+        assertNull(ChatEvents.parse("""{"type":"data-card","data":{"id":"c","root":{"type":"nope"}}}"""))
+        assertNull(ChatEvents.parse("""{"type":"data-card","data":{"id":"c"}}"""))
+    }
+
+    @Test
+    fun `parser covers the full vocabulary with defensive defaults`() {
+        val nodes = GenUiParser.parseRoot(
+            json.parseToJsonElement(
+                """[
+                 {"type":"badge","text":"ok"},
+                 {"type":"progress","value":142.5},
+                 {"type":"list","items":["a","b"],"ordered":true},
+                 {"type":"chart","chart":"bar","data":[{"label":"Mon","value":3},{"label":"Tue","value":null}]},
+                 {"type":"table","columns":["A","B"],"rows":[["x",1],[]]},
+                 {"type":"grid","cols":9,"children":[{"type":"text","text":"g"}]},
+                 {"type":"card","title":"C","children":[{"type":"slides","slides":[{"title":"s","children":[{"type":"text","text":"in"}]}]}]},
+                 {"type":"card","children":[]},
+                 {"type":"chart","chart":"bar","data":[]}
+               ]""",
+            ),
+        )
+        assertEquals("ok" to "default", run { val b = nodes[0] as GenUiNode.Badge; b.text to b.tone })
+        assertEquals(100f, (nodes[1] as GenUiNode.Progress).value) // clamped
+        assertEquals(listOf("a", "b"), (nodes[2] as GenUiNode.BulletList).items)
+        assertEquals(1, (nodes[3] as GenUiNode.Chart).data.size) // null-value point skipped
+        assertEquals(1, (nodes[4] as GenUiNode.Table).rows.size) // empty row skipped
+        assertEquals(4, (nodes[5] as GenUiNode.Grid).cols) // clamped to 1..4
+        val card = nodes[6] as GenUiNode.Card
+        val slides = card.children[0] as GenUiNode.Slides
+        assertEquals("in", (slides.slides[0].children[0] as GenUiNode.Text).text)
+        assertEquals(7, nodes.size) // empty card + empty chart dropped entirely
+    }
+
+    @Test
+    fun `meta cards decode with the row`() {
+        val meta = json.decodeFromString(
+            MessageMetaDto.serializer(),
+            """{"cards":[{"id":"c1","root":{"type":"text","text":"x"}}],"parts":[{"type":"card"}]}""",
+        )
+        assertEquals("c1", meta.cards.single().id)
+        assertEquals(listOf(GenUiNode.Text("x")), GenUiParser.parseRoot(meta.cards.single().root))
     }
 }

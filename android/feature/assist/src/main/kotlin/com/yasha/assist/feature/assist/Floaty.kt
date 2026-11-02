@@ -347,6 +347,7 @@ fun FloatyScreen(onDismiss: () -> Unit) {
                             is ChatEvent.ThreadId -> askThreadId = ev.id
                             is ChatEvent.Delta -> buf.append(ev.text)
                             is ChatEvent.ToolProgress -> askTools = askTools.upsertTool(ev.server, ev.name, ev.status, ev.truncated)
+                            is ChatEvent.RenderCard -> {} // floaty has no card renderer (cards stay off in its body)
                             is ChatEvent.Failure -> answerError = ev.code
                             is ChatEvent.Done -> {}
                         }

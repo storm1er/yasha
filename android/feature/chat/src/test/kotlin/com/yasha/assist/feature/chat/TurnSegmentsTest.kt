@@ -96,4 +96,40 @@ class TurnSegmentsTest {
             TurnSegments.applyTool(segs, tool("x", "running")),
         )
     }
+
+    // ── tier-1 generative cards (issue 30) ──────────────────────────────────
+
+    private fun card(id: String) = UiSegment.Card(id, listOf(com.yasha.assist.core.net.GenUiNode.Text(id)))
+
+    @Test
+    fun `stored parts interleave cards and consume the flat card list`() {
+        val segs = TurnSegments.fromStored(
+            listOf(
+                PartDto("text", text = "Lead. "),
+                PartDto("card"),
+                PartDto("text", text = "Tail."),
+            ),
+            emptyList(),
+            listOf(card("c1")),
+        )
+        assertEquals(
+            listOf(UiSegment.Text("Lead. "), card("c1"), UiSegment.Text("Tail.")),
+            segs,
+        )
+    }
+
+    @Test
+    fun `stored parts mismatch on cards falls back (orphan part or leftover card)`() {
+        assertNull(TurnSegments.fromStored(listOf(PartDto("card")), emptyList(), emptyList()))
+        assertNull(TurnSegments.fromStored(listOf(PartDto("text", text = "x")), emptyList(), listOf(card("c1"))))
+    }
+
+    @Test
+    fun `appendCard adds its own segment after text and chips`() {
+        val segs = listOf(UiSegment.Text("Look: "), UiSegment.Tools(listOf(tool("x"))))
+        assertEquals(
+            segs + card("c9"),
+            TurnSegments.appendCard(segs, card("c9")),
+        )
+    }
 }

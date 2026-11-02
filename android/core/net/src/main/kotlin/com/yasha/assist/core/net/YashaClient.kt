@@ -36,9 +36,10 @@ data class ChatAttachments(
 // sends a minimal valid window — just the new user turn with a client id the
 // server persists verbatim. Older history is NOT echoed: the server rebuilds
 // model input from its own rows, and any user-role echo that didn't come from
-// a loaded thread would be a 409. `interactive=false` is the surface flag:
-// the app cannot answer interactive tool cards yet, so the server never
-// issues them on these requests.
+// a loaded thread would be a 409. Surface flags: `interactive=false` (the app
+// cannot answer ask cards, so the server never issues them) while `cards`
+// opts the surface into display-only render_ui cards (issue #30) — true for
+// the full chat screen, false for the floaty (which has no card renderer).
 @Serializable
 data class OutgoingPart(val type: String, val text: String)
 
@@ -52,6 +53,7 @@ data class ChatRequestBody(
     val model: String? = null,
     val attachments: ChatAttachments? = null,
     val interactive: Boolean = false,
+    val cards: Boolean = false,
 )
 
 /** v3 body factory: fresh client id per send attempt (the route's same-turn
@@ -61,6 +63,7 @@ fun chatRequestBody(
     threadId: String?,
     model: String? = null,
     attachments: ChatAttachments? = null,
+    cards: Boolean = false,
 ): ChatRequestBody = ChatRequestBody(
     id = threadId ?: "new",
     messages = listOf(
@@ -72,6 +75,7 @@ fun chatRequestBody(
     ),
     model = model,
     attachments = attachments,
+    cards = cards,
 )
 
 // Maps one SSE payload JSON to a ChatEvent (pure — unit-tested). Protocol v2
@@ -110,6 +114,14 @@ object ChatEvents {
                             }
                         },
                     )
+                }
+                "data-card" -> (obj["data"] as? JsonObject)?.let { d ->
+                    // Issue #30: {id, root} render_ui card; root is one node or
+                    // an array. An unparseable card drops the event (the turn
+                    // keeps streaming; text parity is unaffected).
+                    val id = d["id"]?.jsonPrimitive?.contentOrNull
+                    val nodes = GenUiParser.parseRoot(d["root"])
+                    if (id != null && nodes.isNotEmpty()) ChatEvent.RenderCard(id, nodes) else null
                 }
                 else -> null // start / text-start / text-end / finish / sources: no app effect
             }
