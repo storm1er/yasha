@@ -489,3 +489,126 @@ describe("projectMessages — generative cards", () => {
     expect(m.segments).toEqual([{ kind: "card", card: renderCard("c1") }]);
   });
 });
+
+// MCP-tool approvals (issue #32): the synthetic tool part is the interactive
+// surface; stored pending records replay back into it, answered ones into a
+// plain chip.
+describe("MCP-tool approvals", () => {
+  const approvalRec = (over: Record<string, unknown> = {}) => ({
+    server: "ketch",
+    name: "send",
+    ms: 0,
+    ok: true,
+    args: '{"to":"mom"}',
+    result: "[pending user approval — do not retry]",
+    approval: true,
+    callId: "c-ap",
+    ...over,
+  });
+
+  it("pending approval record replays as the actionable tool part", () => {
+    const [m] = storedToUiMessages([
+      { id: "a1", role: "assistant", content: "", meta: { tools: [approvalRec()], parts: [{ type: "tools", count: 1 }] } },
+    ]);
+    expect(m.parts[0]).toMatchObject({
+      type: "tool-mcp_approval",
+      toolCallId: "c-ap",
+      state: "input-available",
+      input: { server: "ketch", tool: "send", args: '{"to":"mom"}' },
+    });
+    const [r] = projectMessages([m], false);
+    expect(r.approvals).toEqual([
+      { toolCallId: "c-ap", server: "ketch", tool: "send", args: '{"to":"mom"}', answered: undefined },
+    ]);
+  });
+
+  it("answered approval record stays a plain chip (verdict already in the result)", () => {
+    const [m] = storedToUiMessages([
+      {
+        id: "a2",
+        role: "assistant",
+        content: "",
+        meta: { tools: [approvalRec({ result: "sent!", answered: true })], parts: [{ type: "tools", count: 1 }] },
+      },
+    ]);
+    expect(m.parts[0]).toMatchObject({
+      type: "data-tool",
+      data: { name: "send", result: "sent!", approval: true, answered: true, callId: "c-ap" },
+    });
+    const [r] = projectMessages([m], false);
+    expect(r.approvals).toBeUndefined();
+    expect(r.tools?.[0]).toMatchObject({ name: "send", result: "sent!" });
+  });
+
+  it("fallback path (legacy rows without parts) also converts pending approvals", () => {
+    const [m] = storedToUiMessages([{ id: "a3", role: "assistant", content: "", meta: { tools: [approvalRec()] } }]);
+    expect(m.parts[0]).toMatchObject({ type: "tool-mcp_approval" });
+  });
+
+  it("projects live chunks: pending + answered; skips streaming and nameless inputs", () => {
+    const out = projectMessages(
+      [
+        msg({
+          role: "assistant",
+          parts: [
+            part({
+              type: "tool-mcp_approval",
+              toolCallId: "c1",
+              state: "output-available",
+              input: { server: "ketch", tool: "send" },
+              output: "approved",
+            }),
+            part({ type: "tool-mcp_approval", toolCallId: "c2", state: "input-streaming", input: { tool: "x" } }),
+            part({ type: "tool-mcp_approval", toolCallId: "c3", state: "input-available", input: {} }),
+          ],
+        }),
+      ],
+      false
+    );
+    expect(out[0].approvals).toEqual([
+      { toolCallId: "c1", server: "ketch", tool: "send", args: undefined, answered: "approved" },
+    ]);
+  });
+
+  it("an approval with no other content is still a visible turn", () => {
+    const out = projectMessages(
+      [
+        msg({
+          role: "assistant",
+          parts: [
+            part({
+              type: "tool-mcp_approval",
+              toolCallId: "c9",
+              state: "input-available",
+              input: { tool: "send", args: "{}" },
+            }),
+          ],
+        }),
+      ],
+      false
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].approvals?.[0].toolCallId).toBe("c9");
+  });
+
+  it("JSON (non-string) verdicts stringify for display", () => {
+    const out = projectMessages(
+      [
+        msg({
+          role: "assistant",
+          parts: [
+            part({
+              type: "tool-mcp_approval",
+              toolCallId: "c8",
+              state: "output-available",
+              input: { tool: "send" },
+              output: { ok: 1 },
+            }),
+          ],
+        }),
+      ],
+      false
+    );
+    expect(out[0].approvals?.[0].answered).toBe('{"ok":1}');
+  });
+});

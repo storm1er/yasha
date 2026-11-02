@@ -58,14 +58,22 @@ export const INTERACTIVE_TOOL_DEFS: ToolSet = {
   }),
 };
 
-export type InteractiveCall = { toolCallId: string; tool: InteractiveToolName; args: string };
+/** One row to open at persist time: an interactive ask (`kind: "tool"`, tool =
+ *  ask_choice/confirm_action) or an MCP-tool approval (issue #32, tool = the
+ *  fully-qualified `mcp__<server>__<tool>` name, args = the verbatim call). */
+export type PendingCall = {
+  toolCallId: string;
+  tool: string;
+  args: string;
+  kind?: "tool" | "approval";
+};
 
-/** Write one pending row per ask, when the asking assistant row is persisted.
- * Doubles as the table sweep: anything already expired is dropped per create,
- * so the table stays proportional to live conversations. */
+/** Write one pending row per ask/approval, when the asking assistant row is
+ *  persisted. Doubles as the table sweep: anything already expired is dropped
+ *  per create, so the table stays proportional to live conversations. */
 export function createPendingActions(
   owner: { threadId: string; userId: string; messageId: string },
-  calls: InteractiveCall[],
+  calls: PendingCall[],
   now: Date,
 ): void {
   db.delete(pendingActions).where(lt(pendingActions.expiresAt, now)).run();
@@ -76,7 +84,7 @@ export function createPendingActions(
         threadId: owner.threadId,
         userId: owner.userId,
         messageId: owner.messageId,
-        kind: "tool",
+        kind: call.kind ?? "tool",
         tool: call.tool,
         argsJson: call.args,
         createdAt: now,
@@ -87,7 +95,10 @@ export function createPendingActions(
 }
 
 export type PendingVerdict =
-  | { status: "valid"; messageId: string; tool: InteractiveToolName }
+  /** `tool`/`args` echo the stored request; `kind` splits the answer handling:
+   *  "tool" overlays the output verbatim, "approval" runs (or refuses) the
+   *  deferred MCP call instead (issue #32, route resume branch). */
+  | { status: "valid"; messageId: string; tool: string; args: string; kind: "tool" | "approval" }
   | { status: "expired"; messageId: string }
   | { status: "invalid" };
 
@@ -105,6 +116,8 @@ export function consumePendingAction(
     .select({
       messageId: pendingActions.messageId,
       tool: pendingActions.tool,
+      argsJson: pendingActions.argsJson,
+      kind: pendingActions.kind,
       consumedAt: pendingActions.consumedAt,
       expiresAt: pendingActions.expiresAt,
     })
@@ -121,8 +134,43 @@ export function consumePendingAction(
   db.update(pendingActions).set({ consumedAt: now }).where(eq(pendingActions.id, toolCallId)).run();
   if (row.consumedAt) return { status: "invalid" };
   if (row.expiresAt.getTime() <= now.getTime()) return { status: "expired", messageId: row.messageId };
-  return { status: "valid", messageId: row.messageId, tool: row.tool as InteractiveToolName };
+  return {
+    status: "valid",
+    messageId: row.messageId,
+    tool: row.tool,
+    args: row.argsJson,
+    kind: row.kind,
+  };
 }
+
+// ── MCP-tool approvals (issue #32) ───────────────────────────────────────────
+// A sensitive MCP call is never executed while it awaits a verdict: execute()
+// returns PENDING_APPROVAL, a `kind: "approval"` row opens at persist time and
+// the client gets a synthetic `mcp_approval` tool part (standard tool-input-*
+// chunks — same answer/resume machinery as the interactive asks). An approved
+// verdict is executed by the RESUME request (route) and its real output is
+// overlaid onto the stored round, so the model sees one clean tool exchange —
+// no re-call, no approval protocol inside the model loop.
+//
+// Answers are fixed machine strings (the model reads the verdict, and
+// `askAnswered`-style UI text is derived client-side).
+export const APPROVAL_TOOL = "mcp_approval";
+/** Verdict answers (client buttons). Anything but APPROVED is a denial. */
+export const APPROVED = "approved";
+export const DENIED = "denied";
+/** Model-visible placeholder while the verdict is pending. */
+export const PENDING_APPROVAL =
+  "[pending user approval — do not retry this call; the tool result follows once the user answers]";
+/** Same-turn duplicate after the request is already open. */
+export const ALREADY_PENDING_APPROVAL =
+  "[pending user approval — already requested for this tool, do not retry]";
+/** Surfaces that cannot display the prompt (interactive: false). */
+export const BLOCKED_APPROVAL =
+  "[blocked: this tool requires user approval, which this client cannot request]";
+/** Overlaid when the user clicked Deny. */
+export const DENIED_RESULT = "[denied by user]";
+/** Overlaid when the approved call's server/tool disappeared meanwhile. */
+export const TOOL_GONE_RESULT = "[error: the approved tool is no longer configured]";
 
 /** Pure meta_json patcher: replaces the result of the tool records whose
  *  `callId` matches an update and flags them answered — history converges so

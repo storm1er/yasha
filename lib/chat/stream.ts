@@ -41,14 +41,15 @@ import { mcpMaxToolRounds, memoryEnabled, resolveEventConfig } from "@/lib/setti
 import { getUserMemoryEnabled } from "@/lib/memory/prefs";
 import { createAiToolLoop } from "@/lib/mcp/ai-tools";
 import { createTurnParts, type ToolRoundRecord } from "@/lib/mcp/loop";
-import type { Toolset } from "@/lib/mcp/bridge";
+import { openAiToolName, type Toolset } from "@/lib/mcp/bridge";
 import {
+  APPROVAL_TOOL,
   INTERACTIVE_SERVER,
   INTERACTIVE_TOOL_DEFS,
   NO_ANSWER,
   createPendingActions,
   isInteractiveToolName,
-  type InteractiveToolName,
+  type PendingCall,
 } from "@/lib/chat/interactive";
 import { buildRenderUiTool, type GenUiNode, type RenderedCard } from "@/lib/chat/render-ui";
 
@@ -74,6 +75,10 @@ export type ChatStreamOpts = {
    *  (display-only — no pending rows). Defaults to `interactive` upstream;
    *  Android sends interactive:false + cards:true. False ⇒ no render_ui. */
   cards: boolean;
+  /** Issue #32 (`mcp.requireToolApprovals`): MCP calls pause for an explicit
+   *  user verdict when the surface is interactive; non-interactive surfaces
+   *  get them blocked (never silently executed). */
+  requireApprovals?: boolean;
   newThread: boolean;
   firstTokenTimeoutMs: number;
   heartbeatMs: number;
@@ -139,13 +144,20 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
       })
       .run();
     await db.update(threads).set({ updatedAt: now }).where(eq(threads.id, opts.threadId)).run();
-    // Interactive asks (protocol v3): the client can only answer what was
-    // rendered, and answers are only accepted against these rows.
-    const asks = toolRecords.filter((r) => r.client && r.callId);
-    if (asks.length > 0) {
+    // Interactive asks and MCP approvals (protocol v3): the client can only
+    // answer what was rendered, and answers are only accepted against these
+    // rows. An approval row stores the QUALIFIED tool name so the resume
+    // branch can re-resolve the handle and execute it (issue #32).
+    const pendings = toolRecords.filter((r) => (r.client || r.approval) && r.callId);
+    if (pendings.length > 0) {
+      const calls: PendingCall[] = pendings.map((r) =>
+        r.client
+          ? { toolCallId: r.callId!, tool: r.name, args: r.args }
+          : { toolCallId: r.callId!, tool: openAiToolName(r.server, r.name), args: r.args, kind: "approval" },
+      );
       createPendingActions(
         { threadId: opts.threadId, userId: opts.userId, messageId: assistantMsgId },
-        asks.map((r) => ({ toolCallId: r.callId!, tool: r.name as InteractiveToolName, args: r.args })),
+        calls,
         now,
       );
     }
@@ -217,10 +229,32 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
 
       const maxRounds = mcpMaxToolRounds();
       let roundsDispatched = 0;
+      // MCP-tool approvals (issue #32): a pause rides standard tool-input-*
+      // chunks of a synthetic `mcp_approval` tool — the same answer/resume
+      // machinery as the interactive asks — while the ai-tools gate holds the
+      // bridge call back. Deduped per turn: a model retry never re-asks.
+      const pendingApprovals = new Set<string>();
       const toolLoop = createAiToolLoop({
         toolset: opts.toolset,
         sendEvent: (ev) => send({ type: "data-tool", data: ev }),
         canDispatch: () => roundsDispatched < maxRounds,
+        approval: opts.requireApprovals
+          ? {
+              requires: () => true,
+              canPrompt: opts.interactive,
+              hasPending: (name) => pendingApprovals.has(name),
+              onRequest: (c) => {
+                pendingApprovals.add(openAiToolName(c.serverId, c.tool));
+                send({ type: "tool-input-start", toolCallId: c.toolCallId, toolName: APPROVAL_TOOL });
+                send({
+                  type: "tool-input-available",
+                  toolCallId: c.toolCallId,
+                  toolName: APPROVAL_TOOL,
+                  input: { server: c.serverId, tool: c.tool, args: c.args },
+                });
+              },
+            }
+          : undefined,
       });
       // Interactive asks are recorded into `toolRecords` in stream order (so
       // meta.tools, parts interleaving and the pending rows all agree).
@@ -420,13 +454,13 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
       }
 
       if (state.errorCode) send({ type: "data-error", data: { code: state.errorCode } });
-      // An interactive ask or a displayed card IS output: a turn that ends on
-      // a question or a visual is not an empty response.
+      // An interactive ask, a pending approval or a displayed card IS output:
+      // a turn that ends on a question is not an empty response.
       else if (
         !state.clientAborted &&
         state.assistantText.length === 0 &&
         cardRecords.length === 0 &&
-        !toolRecords.some((r) => r.client)
+        !toolRecords.some((r) => r.client || r.approval)
       )
         send({ type: "data-error", data: { code: "empty_response" } });
 
@@ -451,7 +485,7 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
         } else if (
           state.assistantText.length === 0 &&
           cardRecords.length === 0 &&
-          !toolRecords.some((r) => r.client)
+          !toolRecords.some((r) => r.client || r.approval)
         ) {
           await markFailed("empty_response");
         } else {

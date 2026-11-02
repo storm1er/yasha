@@ -304,7 +304,7 @@ describe("admin settings route", () => {
     res = await callRoute(adminSettings.POST, { method: "POST", path: "/s", cookie: admin.cookie, json: { "chat.maxAudioBytes": 33554433 } });
     expect(res.status).toBe(400); // above the 32 MiB cap
 
-    res = await callRoute(adminSettings.POST, { method: "POST", path: "/s", cookie: admin.cookie, json: { smart_model: " smart ", "memory.enabled": true, "memory.queue.concurrency": "4", "api.firstTokenTimeoutMs": 7, "mcp.userPrivateUrls": true } });
+    res = await callRoute(adminSettings.POST, { method: "POST", path: "/s", cookie: admin.cookie, json: { smart_model: " smart ", "memory.enabled": true, "memory.queue.concurrency": "4", "api.firstTokenTimeoutMs": 7, "mcp.userPrivateUrls": true, "mcp.requireToolApprovals": true } });
     expect(res.status).toBe(200);
     const { values } = await jsonOf<{ values: Record<string, unknown> }>(res);
     expect(values.smart_model).toBe("smart");
@@ -312,6 +312,7 @@ describe("admin settings route", () => {
     expect(values["memory.queue.concurrency"]).toBe(4);
     expect(values["api.firstTokenTimeoutMs"]).toBe(7);
     expect(values["mcp.userPrivateUrls"]).toBe(true);
+    expect(values["mcp.requireToolApprovals"]).toBe(true); // issue #32
     res = await callRoute(adminSettings.POST, { method: "POST", path: "/s", cookie: admin.cookie, json: { "memory.enabled": "false" } });
     expect((await jsonOf<{ values: Record<string, unknown> }>(res)).values["memory.enabled"]).toBe(false);
 

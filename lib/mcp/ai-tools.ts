@@ -11,6 +11,7 @@ import type { ToolEvent, ToolRoundRecord } from "./loop";
 import type { Toolset } from "./bridge";
 import { runToolCall } from "./bridge";
 import { extractToolCard } from "@/lib/chat/generative";
+import { ALREADY_PENDING_APPROVAL, BLOCKED_APPROVAL, PENDING_APPROVAL } from "@/lib/chat/interactive";
 
 export type AiToolLoop = {
   /** AI SDK tool set; `undefined` when no MCP tools are attached. */
@@ -31,6 +32,21 @@ export type AiToolLoop = {
   flushRemaining(): ToolRoundRecord[];
 };
 
+/** Approval policy (issue #32), injected by the stream: MCP calls are gated
+ *  BEFORE the bridge. Promptable surfaces pause (placeholder result + a
+ *  record the stream turns into a `mcp_approval` tool part and a pending row);
+ *  the others get a hard block instead of a silent bypass. */
+export type ApprovalPolicy = {
+  /** Admin policy check (setting), evaluated per call. */
+  requires: () => boolean;
+  /** The surface can display the prompt (protocol v3 `interactive`). */
+  canPrompt: boolean;
+  /** A request for this tool is already open in this turn (dedupe). */
+  hasPending: (qualifiedName: string) => boolean;
+  /** A fresh pause happened: the stream emits the tool-input-* chunks. */
+  onRequest: (call: { toolCallId: string; serverId: string; tool: string; args: string }) => void;
+};
+
 export function createAiToolLoop(opts: {
   toolset: Toolset;
   sendEvent: (ev: ToolEvent) => void;
@@ -38,6 +54,8 @@ export function createAiToolLoop(opts: {
    *  discarded (no bridge call, no event, no record) exactly like the v1
    *  loop's `round >= mcpMaxToolRounds()` break. */
   canDispatch: () => boolean;
+  /** Issue #32; absent or `requires() === false` keeps direct execution. */
+  approval?: ApprovalPolicy;
 }): AiToolLoop {
   const rawArgs = new Map<string, string>();
   const records = new Map<string, ToolRoundRecord>();
@@ -52,6 +70,47 @@ export function createAiToolLoop(opts: {
       execute: async (input, { toolCallId, abortSignal }) => {
         if (!opts.canDispatch()) return "tool round limit reached";
         const raw = rawArgs.get(toolCallId) ?? JSON.stringify(input ?? {});
+        // Approval gate (issue #32) before any bridge dispatch. The paused
+        // record carries callId+approval so persist() opens the pending row
+        // and the resume branch can find the round to overlay onto; the
+        // same-turn duplicate is recorded plainly (the model DID get a tool
+        // result — history must stay tool-complete) but never re-asks.
+        if (opts.approval?.requires()) {
+          if (!opts.approval.canPrompt) {
+            records.set(toolCallId, {
+              server: handle.serverId,
+              name: handle.tool,
+              ms: 0,
+              ok: false,
+              args: raw,
+              result: BLOCKED_APPROVAL,
+            });
+            return BLOCKED_APPROVAL;
+          }
+          if (opts.approval.hasPending(spec.function.name)) {
+            records.set(toolCallId, {
+              server: handle.serverId,
+              name: handle.tool,
+              ms: 0,
+              ok: true,
+              args: raw,
+              result: ALREADY_PENDING_APPROVAL,
+            });
+            return ALREADY_PENDING_APPROVAL;
+          }
+          records.set(toolCallId, {
+            server: handle.serverId,
+            name: handle.tool,
+            ms: 0,
+            ok: true,
+            args: raw,
+            result: PENDING_APPROVAL,
+            approval: true,
+            callId: toolCallId,
+          });
+          opts.approval.onRequest({ toolCallId, serverId: handle.serverId, tool: handle.tool, args: raw });
+          return PENDING_APPROVAL;
+        }
         opts.sendEvent({ server: handle.serverId, name: handle.tool, status: "running", args: raw });
         const out = await runToolCall(handle, raw, abortSignal);
         // `truncated` only when true — unchanged turns stay byte-stable.

@@ -4,7 +4,7 @@ import { requireAdmin } from "@/lib/admin-auth";
 import { ensureReady } from "@/lib/db";
 import { db } from "@/lib/db";
 import { mcpServers, user } from "@/lib/db/schema";
-import { mcpEnabled, mcpUserPrivateUrls, mcpUserServersEnabled } from "@/lib/settings";
+import { mcpEnabled, mcpRequireToolApprovals, mcpUserPrivateUrls, mcpUserServersEnabled } from "@/lib/settings";
 import { dropConnection } from "@/lib/mcp/client";
 import {
   maskHeaders,
@@ -72,6 +72,7 @@ export async function GET() {
     mcpEnabled: mcpEnabled(),
     userServersEnabled: mcpUserServersEnabled(),
     userPrivateUrls: mcpUserPrivateUrls(),
+    requireToolApprovals: mcpRequireToolApprovals(),
     servers: entries.map((e) => ({
       id: e.server.id,
       builtin: e.server.builtin,

@@ -3,7 +3,14 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { getAuthedUserId } from "@/lib/api-auth";
 import { buildChatResponse } from "@/lib/chat/stream";
 import { parseV3Request } from "@/lib/chat/request-v3";
-import { EXPIRED_ANSWER, consumePendingAction, overlayToolResults } from "@/lib/chat/interactive";
+import {
+  APPROVED,
+  DENIED_RESULT,
+  EXPIRED_ANSWER,
+  TOOL_GONE_RESULT,
+  consumePendingAction,
+  overlayToolResults,
+} from "@/lib/chat/interactive";
 import { toModelMessages } from "@/lib/chat/model-messages";
 import {
   buildUpstreamMessages,
@@ -14,8 +21,20 @@ import {
 import { AUDIO_TURN_INSTRUCTION } from "@/lib/audio-input";
 import { db, ensureReady } from "@/lib/db";
 import { messages, threads } from "@/lib/db/schema";
-import { fastModel, getSettingInt, mcpEnabled, memoryEnabled, resolveEventConfig, smartModel } from "@/lib/settings";
-import { buildToolset, type Toolset } from "@/lib/mcp/bridge";
+import {
+  fastModel,
+  getSettingInt,
+  mcpEnabled,
+  mcpRequireToolApprovals,
+  memoryEnabled,
+  resolveEventConfig,
+  smartModel,
+} from "@/lib/settings";
+import {
+  buildToolset,
+  runToolCall,
+  type Toolset,
+} from "@/lib/mcp/bridge";
 import { expandToolRounds, type ChatUpstreamMessage } from "@/lib/mcp/loop";
 import { buildMemoryContext } from "@/lib/memory/recall";
 import { stampUserContent, QUOTED_DATA_LINE } from "@/lib/memory/transcript";
@@ -189,6 +208,18 @@ export async function POST(req: NextRequest) {
       .run();
   }
 
+  // MCP tools (kill-switch + per-server enablement inside buildToolset).
+  // Models that 4xx'd a tools request are remembered and skipped from then on.
+  // Built LAZILY and once per request: paths that short-circuit before tools
+  // matter (bogus resume) never pay the build, while the resume branch can
+  // reach it to execute an approved deferred call (issue #32).
+  let toolsetP: Promise<Toolset> | null = null;
+  const getToolset = (): Promise<Toolset> =>
+    (toolsetP ??=
+      mcpEnabled() && getUserMcpEnabled(userId) && !noToolSupport.has(model)
+        ? buildToolset(userId)
+        : Promise.resolve({ specs: [], handles: new Map() }));
+
   // ── Trigger-specific persistence (protocol v3) ─────────────────────────────
   let userMsgId: string;
   const meta: Record<string, unknown> = {};
@@ -199,17 +230,42 @@ export async function POST(req: NextRequest) {
     // is a bogus/stale client → 409; a mixed batch keeps the valid ones.
     const now = new Date();
     const overlays: { messageId: string; callId: string; result: string }[] = [];
+    // MCP-tool approvals (issue #32): instead of overlaying the raw verdict,
+    // an approved call is EXECUTED here and its real output overlaid — the
+    // model then sees one clean tool exchange (no re-call, no approval
+    // protocol inside the model loop). Deny and vanishing tools overlay
+    // fixed machine strings.
+    const approvals: { messageId: string; callId: string; tool: string; args: string; approved: boolean }[] = [];
     for (const r of parsed.toolResults) {
       const verdict = consumePendingAction(r.toolCallId, userId, threadId, now);
       if (verdict.status === "invalid") continue;
+      if (verdict.status === "valid" && verdict.kind === "approval") {
+        approvals.push({
+          messageId: verdict.messageId,
+          callId: r.toolCallId,
+          tool: verdict.tool,
+          args: verdict.args,
+          approved: r.output.trim() === APPROVED,
+        });
+        continue;
+      }
       overlays.push({
         messageId: verdict.messageId,
         callId: r.toolCallId,
         result: verdict.status === "valid" ? r.output : EXPIRED_ANSWER,
       });
     }
-    if (overlays.length === 0) {
+    if (overlays.length === 0 && approvals.length === 0) {
       return NextResponse.json({ error: "invalid_history" }, { status: 409 });
+    }
+    for (const a of approvals) {
+      let result: string;
+      if (!a.approved) result = DENIED_RESULT;
+      else {
+        const handle = (await getToolset()).handles.get(a.tool);
+        result = handle ? (await runToolCall(handle, a.args, req.signal)).content : TOOL_GONE_RESULT;
+      }
+      overlays.push({ messageId: a.messageId, callId: a.callId, result });
     }
     overlayToolResults(overlays);
     // Anchor for failure marking + queue payloads: the thread's last user row
@@ -349,12 +405,8 @@ export async function POST(req: NextRequest) {
     // older voice messages replay to the model as the [voice message] marker.
     windowRows.length - 1
   );
-  // MCP tools (kill-switch + per-server enablement inside buildToolset).
-  // Models that 4xx'd a tools request are remembered and skipped from then on.
-  const toolset: Toolset =
-    mcpEnabled() && getUserMcpEnabled(userId) && !noToolSupport.has(model)
-      ? await buildToolset(userId)
-      : { specs: [], handles: new Map() };
+  // MCP tools: the lazily-built, once-per-request toolset (see above).
+  const toolset: Toolset = await getToolset();
   // Interactive asks (protocol v3) ride the same tool-support degradation and
   // the same re-arm rule as MCP tools: declared only while the model accepts
   // tools, replayed into history only while declared.
@@ -422,6 +474,7 @@ export async function POST(req: NextRequest) {
     // 4xx'd with tools never gets ask_choice/confirm_action either.
     interactive,
     cards,
+    requireApprovals: mcpRequireToolApprovals(),
     newThread,
     firstTokenTimeoutMs,
     heartbeatMs,

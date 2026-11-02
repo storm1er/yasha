@@ -160,6 +160,12 @@ export function mcpUserServersEnabled(): boolean {
   return getSettingBool("mcp.userServersEnabled", false);
 }
 
+/** Issue #32: every MCP tool call pauses for an explicit user verdict
+ *  (interactive surfaces) or is blocked (the others). */
+export function mcpRequireToolApprovals(): boolean {
+  return getSettingBool("mcp.requireToolApprovals", false);
+}
+
 /** Allow user-owned MCP rows to point at private/LAN hosts (off = SSRF guard). */
 export function mcpUserPrivateUrls(): boolean {
   return getSettingBool("mcp.userPrivateUrls", false) && process.env.MCP_ALLOW_PRIVATE_URLS !== "false";

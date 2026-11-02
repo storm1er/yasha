@@ -24,6 +24,7 @@ import {
   type ChatMessageMeta,
   type InteractiveAsk,
   type ServerMessage,
+  type ToolApproval,
   type ToolChip,
   type YashaUIMessage,
 } from "@/lib/chat/ui-messages";
@@ -179,6 +180,60 @@ function InteractiveAskView({
             {b.label}
           </button>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// MCP-tool approval (issue #32): a paused MCP call waiting for an explicit
+// verdict. Approve/Deny feed addToolOutput like the interactive asks — the
+// resume request executes (or refuses) the deferred tool server-side.
+function ToolApprovalView({
+  approval,
+  disabled,
+  t,
+  onAnswer,
+}: {
+  approval: ToolApproval;
+  disabled: boolean;
+  t: ReturnType<typeof useTranslations>;
+  onAnswer: (approval: ToolApproval, output: string) => void;
+}) {
+  if (approval.answered !== undefined) {
+    return (
+      <p data-testid="approval-answered" className="text-sm text-muted-foreground">
+        {t("askAnswered", { answer: approval.answered === "approved" ? t("approve") : t("deny") })}
+      </p>
+    );
+  }
+  return (
+    <div data-testid="tool-approval" className="rounded-2xl border border-amber-500/40 bg-card px-4 py-3">
+      <p className="text-[15px] font-medium">{t("approvalQuestion", { tool: approval.tool })}</p>
+      {approval.server !== "" && (
+        <p className="mt-0.5 text-xs text-muted-foreground">{t("approvalServer", { server: approval.server })}</p>
+      )}
+      {approval.args && (
+        <pre className="mt-2 max-h-32 overflow-auto rounded-lg bg-muted px-2 py-1.5 text-xs">{approval.args}</pre>
+      )}
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={disabled}
+          data-testid="approval-approve"
+          onClick={() => onAnswer(approval, "approved")}
+          className="rounded-full border border-emerald-500/50 px-4 py-1.5 text-sm transition-colors hover:bg-emerald-500/10 disabled:opacity-50"
+        >
+          {t("approve")}
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          data-testid="approval-deny"
+          onClick={() => onAnswer(approval, "denied")}
+          className="rounded-full border border-destructive/40 px-4 py-1.5 text-sm transition-colors hover:bg-destructive/10 disabled:opacity-50"
+        >
+          {t("deny")}
+        </button>
       </div>
     </div>
   );
@@ -553,6 +608,21 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
     [addToolOutput]
   );
 
+  /** Answer an MCP-tool approval (issue #32): identical resume machinery —
+   *  the verdict rides the synthetic `mcp_approval` tool part; the server
+   *  executes or refuses the deferred call and overlays its result. */
+  const answerApproval = useCallback(
+    (approval: ToolApproval, output: string) => {
+      addToolOutput({
+        tool: "mcp_approval",
+        toolCallId: approval.toolCallId,
+        output,
+        options: { body: { id: threadIdRef.current ?? "new" } },
+      });
+    },
+    [addToolOutput]
+  );
+
   const startNewChat = useCallback(() => {
     // Reset local state first: after the first message the thread URL is set
     // via history.replaceState, which does not update router state, so
@@ -832,6 +902,19 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
                                 disabled={streaming}
                                 t={t}
                                 onAnswer={answerAsk}
+                              />
+                            ))}
+                          </div>
+                        )}
+                        {m.approvals && m.approvals.length > 0 && (
+                          <div className="mt-2 space-y-2">
+                            {m.approvals.map((approval) => (
+                              <ToolApprovalView
+                                key={approval.toolCallId}
+                                approval={approval}
+                                disabled={streaming}
+                                t={t}
+                                onAnswer={answerApproval}
                               />
                             ))}
                           </div>

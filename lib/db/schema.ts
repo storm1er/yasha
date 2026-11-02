@@ -110,7 +110,7 @@ export const pendingActions = sqliteTable("pending_actions", {
   messageId: text("message_id")
     .notNull()
     .references(() => messages.id, { onDelete: "cascade" }),
-  kind: text("kind").$type<"tool">().notNull().default("tool"),
+  kind: text("kind").$type<"tool" | "approval">().notNull().default("tool"),
   tool: text("tool").notNull(),
   argsJson: text("args_json").notNull(),
   // Plain timestamps (no $defaultFn): createPendingActions always supplies both.

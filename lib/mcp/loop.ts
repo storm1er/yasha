@@ -55,6 +55,11 @@ export type ToolRoundRecord = {
   client?: boolean;
   callId?: string;
   answered?: boolean;
+  /** MCP-tool approval pause (issue #32): like `client`, `callId` is the id
+   *  the answer gates against (pending_actions kind "approval"), but the
+   *  round replays as a real MCP exchange — the approved tool executes on
+   *  resume and the overlay replaces `result`. */
+  approval?: boolean;
 };
 
 /** Accumulates `delta.tool_calls` fragments (index-keyed, args concatenated). */

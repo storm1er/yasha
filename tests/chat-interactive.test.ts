@@ -200,6 +200,8 @@ describe("interactive gate (unit)", () => {
       status: "valid",
       messageId: askMsgId,
       tool: "ask_choice",
+      args: ASK_ARGS,
+      kind: "tool",
     });
     expect(db.select().from(pendingActions).get()!.consumedAt).not.toBeNull();
     expect(consumePendingAction(toolCallId, user.userId, threadId, now)).toEqual({ status: "invalid" });

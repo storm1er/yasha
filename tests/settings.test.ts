@@ -10,6 +10,7 @@ import {
   getSettingString,
   invalidateSettingsCache,
   jobTypeAllowed,
+  mcpRequireToolApprovals,
   memoryEnabled,
   resolveEventConfig,
   smartModel,
@@ -95,6 +96,12 @@ describe("lib/settings typed getters", () => {
     expect(memoryEnabled()).toBe(true); // default when unset
     setSetting("memory.enabled", "false");
     expect(memoryEnabled()).toBe(false);
+  });
+
+  it("mcpRequireToolApprovals follows mcp.requireToolApprovals (issue #32)", () => {
+    expect(mcpRequireToolApprovals()).toBe(false); // default when unset
+    setSetting("mcp.requireToolApprovals", "true");
+    expect(mcpRequireToolApprovals()).toBe(true);
   });
 
   it("fastModel/smartModel trim to null when blank", () => {

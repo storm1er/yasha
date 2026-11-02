@@ -147,4 +147,80 @@ describe("createAiToolLoop", () => {
     await tool.execute!({}, { toolCallId: "gc3", abortSignal: undefined });
     expect(events[1]).not.toHaveProperty("card"); // errors never surface cards
   });
+
+  // MCP-tool approvals (issue #32): the gate runs BEFORE the bridge.
+  describe("approval policy", () => {
+    const PENDING_MARK = "[pending user approval";
+
+    function approvalLoop(over: Partial<{ requires: boolean; canPrompt: boolean }> = {}) {
+      const requests: { toolCallId: string; serverId: string; tool: string; args: string }[] = [];
+      const pending = new Set<string>();
+      const l = createAiToolLoop({
+        toolset: makeToolset(),
+        sendEvent: (e) => events.push(e),
+        canDispatch: () => true,
+        approval: {
+          requires: () => over.requires ?? true,
+          canPrompt: over.canPrompt ?? true,
+          hasPending: (name) => pending.has(name),
+          onRequest: (c) => {
+            requests.push(c);
+            pending.add("t1");
+          },
+        },
+      });
+      return { l, requests };
+    }
+
+    it("paused call: placeholder result, approval record, no dispatch", async () => {
+      const { l, requests } = approvalLoop();
+      const out = await (l.tools!.t1 as ExecutableTool).execute!({ q: 1 }, { toolCallId: "ap1", abortSignal: undefined });
+      expect(out).toContain(PENDING_MARK);
+      expect(mockedRun).not.toHaveBeenCalled();
+      expect(events).toHaveLength(0); // the pause is not a chip event
+      expect(requests).toEqual([{ toolCallId: "ap1", serverId: "srv", tool: "t1", args: '{"q":1}' }]);
+      expect(l.takeRound([{ toolCallId: "ap1" }])).toEqual([
+        {
+          server: "srv",
+          name: "t1",
+          ms: 0,
+          ok: true,
+          args: '{"q":1}',
+          result: expect.stringContaining(PENDING_MARK),
+          approval: true,
+          callId: "ap1",
+        },
+      ]);
+    });
+
+    it("same-turn retry while a request is open: deduped, recorded plain (no second ask)", async () => {
+      const { l, requests } = approvalLoop();
+      await (l.tools!.t1 as ExecutableTool).execute!({}, { toolCallId: "ap1", abortSignal: undefined });
+      const out = await (l.tools!.t1 as ExecutableTool).execute!({}, { toolCallId: "ap2", abortSignal: undefined });
+      expect(requests).toHaveLength(1);
+      expect(out).toContain("already requested");
+      const rec = l.takeRound([{ toolCallId: "ap2" }])[0];
+      expect(rec).not.toHaveProperty("approval"); // no second pending row
+      expect(rec.result).toContain("already requested");
+    });
+
+    it("non-promptable surface: hard block recorded as an error result", async () => {
+      const { l, requests } = approvalLoop({ canPrompt: false });
+      const out = await (l.tools!.t1 as ExecutableTool).execute!({}, { toolCallId: "ap3", abortSignal: undefined });
+      expect(out).toContain("[blocked");
+      expect(requests).toHaveLength(0);
+      expect(mockedRun).not.toHaveBeenCalled();
+      const rec = l.takeRound([{ toolCallId: "ap3" }])[0];
+      expect(rec).toMatchObject({ ok: false, result: expect.stringContaining("[blocked") });
+      expect(rec).not.toHaveProperty("approval");
+    });
+
+    it("requires() false → direct execution unchanged", async () => {
+      mockedRun.mockResolvedValue({ content: "fine", ok: true, ms: 1 });
+      const { l, requests } = approvalLoop({ requires: false });
+      const out = await (l.tools!.t1 as ExecutableTool).execute!({}, { toolCallId: "ap4", abortSignal: undefined });
+      expect(out).toBe("fine");
+      expect(requests).toHaveLength(0);
+    });
+  });
 });
