@@ -7,6 +7,7 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import * as chatRoute from "@/app/api/chat/route";
+import * as stopRoute from "@/app/api/chat/stop/route";
 import { ensureReady } from "@/lib/db";
 import { messages, pendingActions, threads } from "@/lib/db/schema";
 import { releaseGeneration } from "@/lib/provider/gate";
@@ -284,21 +285,19 @@ describe("ask flow", () => {
     expect(pending[0]).toMatchObject({ id: "call-ask-9", threadId, messageId: asst.id, tool: "ask_choice", kind: "tool" });
   });
 
-  it("client aborts mid-ask: nothing persists (the question was never closed)", async () => {
+  it("stop mid-ask: nothing persists (the question was never closed)", async () => {
     // The SDK emits tool-call parts only when the upstream stream closes, so
-    // an aborted ask stores neither a row nor a pending action — answers to
-    // it gate out (409) and the user retries as a fresh turn.
+    // a turn killed before the ask completes stores neither a row nor a pending
+    // action — answers to it gate out (409) and the user retries as a fresh turn.
     const stream = streamResponse();
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
     bindStream(mock, stream);
-    const ac = new AbortController();
     const res = await chatRoute.POST(
       makeRequest({
         method: "POST",
         path: "/api/chat",
         cookie: user.cookie,
-        signal: ac.signal,
         json: { id: "new", messages: [{ id: "u-abort-ask", role: "user", parts: [{ type: "text", text: "pick a day" }] }] },
       })
     );
@@ -316,7 +315,9 @@ describe("ask flow", () => {
       seen += dec.decode(chunk.value, { stream: true });
     }
     expect(seen).toContain("tool-input-delta"); // deltas streamed…
-    ac.abort(); // …then the connection died before the call completed
+    // …then issue #33's explicit kill aborts the upstream before the call closes.
+    const threadId = /"threadId":"([^"]+)"/.exec(seen)![1];
+    await callRoute(stopRoute.POST, { method: "POST", path: "/api/chat/stop", cookie: user.cookie, json: { id: threadId } });
     await new Promise((r) => setTimeout(r, 50));
     expect(db.select().from(messages).where(eq(messages.role, "assistant")).all()).toHaveLength(0);
     expect(db.select().from(pendingActions).all()).toHaveLength(0);

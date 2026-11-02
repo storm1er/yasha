@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import * as chatRoute from "@/app/api/chat/route";
+import { killReplay } from "@/lib/chat/replay";
 import { buildToolset, runToolCall, type ToolHandle } from "@/lib/mcp/bridge";
 import {
   createToolCallAccumulator,
@@ -13,11 +14,10 @@ import {
 import { ensureReady } from "@/lib/db";
 import { setUserMcpEnabled } from "@/lib/mcp/prefs";
 import { db, setFastModel, setSetting } from "./support/db";
-import { callRoute, makeRequest, sessionId, signUp, waitFor, type TestUser } from "./support/app";
+import { callRoute, sessionId, signUp, waitFor, type TestUser } from "./support/app";
 import { v3Body } from "./support/v3";
 import { mockLemonade, sseChatCompletion, streamResponse } from "./support/lemonade";
 import { drainUi, uiData, uiErrorCode, uiText, uiThread, type UiChunk } from "./support/ui-stream";
-import { setCurrentHeaders } from "./support/request-context";
 import { jobs, messages, threads } from "@/lib/db/schema";
 
 vi.mock("@/lib/mcp/bridge", async (importOriginal) => {
@@ -489,7 +489,7 @@ describe("chat loop (MCP tools → AI SDK rounds)", () => {
     expect(lastBody.tools).toBeUndefined();
   });
 
-  it("tool loop survives client abort between rounds: partial assistant persisted with tool records", async () => {
+  it("tool loop survives an explicit stop between rounds: partial assistant persisted with tool records", async () => {
     mockedBuild.mockResolvedValue(toolset());
     mockedRun.mockResolvedValue({ content: "r1", ok: true, ms: 2 });
     const mock = mockLemonade();
@@ -512,21 +512,17 @@ describe("chat loop (MCP tools → AI SDK rounds)", () => {
         first.attach(call.signal);
         return first.response;
       }
-      // Round 2 hangs until the client aborts (the fetch signal fires).
+      // Round 2 hangs until the stop route aborts (the fetch signal fires).
       return new Promise((_resolve, reject) => {
         call.signal?.addEventListener("abort", () => reject(new Error("aborted in flight")));
       });
     });
-    const ac = new AbortController();
-    const req = makeRequest({
+    const res = await callRoute(chatRoute.POST, {
       method: "POST",
       path: "/api/chat",
       cookie: user.cookie,
       json: v3Body({ message: "go" }),
-      signal: ac.signal,
     });
-    setCurrentHeaders(req.headers);
-    const res = await chatRoute.POST(req);
     const chunks = await readUi(res, 7); // data-thread, start-step, text*, tool running, tool done
     expect(chunks.map((c) => c.type)).toEqual([
       "data-thread",
@@ -537,7 +533,11 @@ describe("chat loop (MCP tools → AI SDK rounds)", () => {
       "data-tool",
       "data-tool",
     ]);
-    ac.abort(); // client goes away mid round 2
+    // Issue #33: disconnecting is not a stop — the turn must be killed
+    // explicitly. A SYNCHRONOUS hub kill (same timing the old client-abort had):
+    // it lands between the tool execution and the step-end bookkeeping, so the
+    // partial row keeps the round via the flushRemaining drain.
+    expect(killReplay(user.userId, uiThread(chunks))).toBe(true);
     await readRest(res);
     const threadId = uiThread(chunks);
     await waitFor(() =>

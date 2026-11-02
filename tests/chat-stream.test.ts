@@ -1,13 +1,13 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import * as chatRoute from "@/app/api/chat/route";
+import * as stopRoute from "@/app/api/chat/stop/route";
 import { ensureReady } from "@/lib/db";
 import { db } from "./support/db";
 import { setFastModel, setSetting } from "./support/db";
 import { rawSqlite } from "./support/db";
 import { invalidateSettingsCache } from "@/lib/settings";
-import { adminUser, callRoute, makeRequest, sessionId, signUp, waitFor, type AdminUser, type TestUser } from "./support/app";
-import { setCurrentHeaders } from "./support/request-context";
+import { adminUser, callRoute, sessionId, signUp, waitFor, type AdminUser, type TestUser } from "./support/app";
 import { bindStream, mockLemonade, modelsResponse, sseChatCompletion, streamResponse, type LemonadeMock } from "./support/lemonade";
 import { drainUi, uiData, uiErrorCode, uiText, uiThread, type UiChunk } from "./support/ui-stream";
 import { v3Body } from "./support/v3";
@@ -59,6 +59,9 @@ function chatBody(over: Record<string, unknown> = {}) {
 async function postChat(json: Record<string, unknown>, cookie = user.cookie) {
   return callRoute(chatRoute.POST, { method: "POST", path: "/api/chat", cookie, json });
 }
+
+const stopPost = (json: unknown) =>
+  callRoute(stopRoute.POST, { method: "POST", path: "/api/chat/stop", cookie: user.cookie, json });
 
 function userMessages(threadId: string) {
   return db.select().from(messages).where(and(eq(messages.threadId, threadId), eq(messages.role, "user"))).all();
@@ -306,37 +309,32 @@ describe("chat upstream failures", () => {
     expect(um[0].metaJson).toContain('"error":"upstream_status_500"');
   });
 
-  it("client abort before upstream responds: silent cleanup, message kept", async () => {
+  it("explicit stop during connect: silent cleanup, message kept", async () => {
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
     mock.route(CHAT, async (_url, call) => {
       await untilAborted(call.signal);
       throw new Error("aborted mid-connect");
     });
-    const ac = new AbortController();
-    const req = makeRequest({ method: "POST", path: "/api/chat", cookie: user.cookie, json: chatBody(), signal: ac.signal });
-    setCurrentHeaders(req.headers);
-    const res = await chatRoute.POST(req);
+    // Issue #33: disconnects are harmless — the kill is the explicit stop route.
+    const res = await postChat(chatBody());
     const first = await readUi(res, 1); // data-thread arrives before fetch resolves
     const threadId = uiThread(first);
-    ac.abort();
+    expect((await stopPost({ id: threadId })).status).toBe(200);
     await waitFor(() => !hasInFlightGeneration(user.userId));
     await delay(20);
     expect(userMessages(threadId).length).toBe(1); // never generated → nothing to roll back
     expect(assistantMessages(threadId).length).toBe(0);
   });
 
-  it("client abort while upstream returns non-2xx: keeps user message unannotated", async () => {
+  it("explicit stop while upstream returns non-2xx: keeps user message unannotated", async () => {
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
     mock.route(CHAT, async (_url, call) => {
       await untilAborted(call.signal);
       return new Response("late 500", { status: 500 });
     });
-    const ac = new AbortController();
-    const req = makeRequest({ method: "POST", path: "/api/chat", cookie: user.cookie, json: chatBody(), signal: ac.signal });
-    setCurrentHeaders(req.headers);
-    const res = await chatRoute.POST(req);
+    const res = await postChat(chatBody());
     const reader = res.body!.getReader();
     const dec = new TextDecoder();
     let text = "";
@@ -348,9 +346,9 @@ describe("chat upstream failures", () => {
       }
     })();
     await waitFor(() => text.includes("data-thread"));
-    ac.abort();
-    await pump;
     const threadId = /"threadId":"([^"]+)"/.exec(text)![1];
+    expect((await stopPost({ id: threadId })).status).toBe(200);
+    await pump;
     expect(userMessages(threadId).length).toBe(1); // client was gone → no rollback
     expect(userMessages(threadId)[0].metaJson ?? "").not.toContain("error");
     expect(assistantMessages(threadId).length).toBe(0);
@@ -503,12 +501,12 @@ describe("chat upstream failures", () => {
     expect(text).toContain(": keep-alive");
     expect(text).toContain(": stream-open");
     reader.releaseLock();
-    await res.body!.cancel(); // cancel must clear the interval (cleanup path)
+    await res.body!.cancel(); // issue #33: the view is gone but the hub lives…
     await delay(150);
-    stream.done();
+    stream.done(); // …until the generation itself ends (which clears the timer)
   });
 
-  it("client cancels the response body: partial text persisted as aborted", async () => {
+  it("client cancels the response body: generation completes, full row persists", async () => {
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
     const stream = streamResponse();
@@ -517,11 +515,15 @@ describe("chat upstream failures", () => {
     const res = await postChat(chatBody());
     const chunks = await readUi(res, 4); // data-thread, start-step, text-start, one delta
     expect(chunks[3].type).toBe("text-delta");
-    stream.pushText(" more"); // sent while cancelling → write may throw (caught)
-    await res.body!.cancel();
+    await res.body!.cancel(); // issue #33: a gone view is NOT a stop
+    stream.pushText(" more"); // generation must not care
+    stream.pushFinish();
+    stream.done();
     const threadId = uiThread(chunks);
     await waitFor(() => assistantMessages(threadId).length === 1);
-    expect(assistantMessages(threadId)[0].metaJson).toContain("aborted");
+    const meta = JSON.parse(assistantMessages(threadId)[0].metaJson!) as { aborted?: boolean };
+    expect(meta.aborted).toBeUndefined();
+    expect(assistantMessages(threadId)[0].content).toContain("first bit more");
   });
 
   it("tolerates comments, no-op and reasoning deltas; forwards usage", async () => {
@@ -720,15 +722,12 @@ describe("chat persist edge arms", () => {
     expect(JSON.stringify(sent.messages)).not.toContain("thread_summary");
   });
 
-  it("abort before any content: nothing persisted, no error frame", async () => {
+  it("stop before any content: nothing persisted, no error frame", async () => {
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
     const stream = streamResponse();
     bindStream(mock, stream);
-    const ac = new AbortController();
-    const req = makeRequest({ method: "POST", path: "/api/chat", cookie: user.cookie, json: chatBody(), signal: ac.signal });
-    setCurrentHeaders(req.headers);
-    const res = await chatRoute.POST(req);
+    const res = await postChat(chatBody());
     const reader = res.body!.getReader();
     const dec = new TextDecoder();
     let text = "";
@@ -740,26 +739,25 @@ describe("chat persist edge arms", () => {
       }
     })();
     await waitFor(() => text.includes("data-thread"));
-    ac.abort();
-    stream.fail(new Error("gone"));
-    await pump;
-    expect(text).not.toContain("data-error");
     const threadId = /"threadId":"([^"]+)"/.exec(text)![1];
+    // Issue #33: the explicit kill — mirrors the old disconnect-abort path.
+    expect((await stopPost({ id: threadId })).status).toBe(200);
+    await pump; // the view ends when the killed hub closes
+    expect(text).not.toContain("data-error");
     expect(assistantMessages(threadId).length).toBe(0);
   });
 
-  it("cancel with zero content: cleanup only", async () => {
+  it("stop with zero content: cleanup only", async () => {
     const mock = mockLemonade();
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
     const stream = streamResponse();
     bindStream(mock, stream);
     const res = await postChat(chatBody());
     const chunks = await readUi(res, 1); // data-thread only
-    await res.body!.cancel();
     const threadId = uiThread(chunks);
+    expect((await stopPost({ id: threadId })).status).toBe(200);
     await waitFor(() => !hasInFlightGeneration(user.userId));
     expect(assistantMessages(threadId).length).toBe(0);
-    stream.done();
   });
 
   it("429 when a generation sneaks in between the busy-gate and the slot claim (TOCTOU)", async () => {

@@ -15,7 +15,7 @@ tests use the same fixtures).
 | P2 pending-actions gate | shipped | `pending_actions` table, `lib/chat/interactive.ts` |
 | P3 interactive tools (`ask_choice`/`confirm_action`) + resume | shipped | web renders + answers; Android sends `interactive: false` |
 | Tier-1 generative UI `render_ui` (issue #28) | shipped | `data-card` chunk + `meta.cards`; gated by `interactive ∥ cards` (issue #30), see §Response |
-| P3 resume-stream reattach | **not built** | optional; see "Resume streams" below |
+| P3 resume-stream reattach (issue #33) | shipped | detached generation + replay hub (`lib/chat/replay.ts`), `GET /api/chat/[threadId]/stream`, `POST /api/chat/stop`, thread `generating` flag — see §Resume streams |
 | MCP-tool **approvals** (issue #32) | shipped | own contract (not the SDK's `tool-approval-request`): `kind:"approval"` rows + synthetic `mcp_approval` tool part + setting `mcp.requireToolApprovals` — see §Pending actions |
 
 
@@ -141,11 +141,31 @@ Non-promptable surfaces (`interactive: false`) get a hard `[blocked: …]` tool 
 gated tools are never silently executed there. The `/v1` compat endpoint has no client channel
 and is unaffected by the setting (documented limitation).
 
-## Resume streams (P3, optional)
+## Resume streams (issue #33)
 
-In-process buffer (`consumeSseStream`) keyed by thread; a client reconnect with no new turn
-reattaches and replays. **Single-instance constraint** (matches the compose topology) — documented,
-not solved as a distributed system.
+Generation is **decoupled from the response connection**. `buildChatResponse` opens a replay hub
+(`lib/chat/replay.ts`) keyed by `(userId, threadId)`: every SSE frame of the turn is buffered and
+fanned out to any number of views. The original `POST /api/chat` response is just one view, so:
+
+- **A client disconnect no longer kills the turn.** Closing/reloading the tab unsubscribes its
+  view; generation runs to completion server-side and the assistant row persists normally (the busy
+  gate stays claimed until then — a second send still gets `409 busy`).
+- **Reattach:** `GET /api/chat/[threadId]/stream` (the SDK's default `reconnectToStream` URL)
+  returns the hub view — a full replay from frame zero (matching `resumeStreamIsReplay`), then
+  live frames until the turn ends. `204` = nothing in flight (the SDK's clean no-resume signal).
+  Ownership is implicit: the hub key is the authenticated user id, so another user's thread id
+  matches nothing (204, not a 404 oracle). The web client calls `resumeStream()` after loading a
+  thread whose `GET /api/threads/[id]` reports `thread.generating: true`.
+- **Explicit stop:** because a gone view is not a stop, the Stop button must tell the server —
+  `POST /api/chat/stop { id }` aborts the turn exactly like the old disconnect path (partial row
+  persists as `aborted: true`, gate releases, `200`; `404` when idle). Before the first `data-thread`
+  arrives there is no id to target, so the turn finishes server-side and surfaces on reload.
+
+Frames are pre-encoded SSE strings byte-identical to `JsonToSseTransformStream` (`data: {json}\n\n`,
+closed by `data: [DONE]\n\n`), with `: stream-open` / `: keep-alive` comment pings on the heartbeat,
+so `DefaultChatTransport.processResponseStream` parses hub views unchanged. **Single-instance
+constraint** (process-local registry, same as the busy gate — matches the compose topology), and a
+fan-out cap per hub (extra reattaches get 204). The `/v1` compat endpoint is unaffected (no hub).
 
 ## Error codes
 

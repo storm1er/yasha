@@ -460,7 +460,6 @@ export async function POST(req: NextRequest) {
   }
 
   const stream = buildChatResponse({
-    req,
     controller,
     userId,
     threadId,

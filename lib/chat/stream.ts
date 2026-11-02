@@ -14,8 +14,12 @@
 //               confirm_action) forwarded as STANDARD tool chunks; the client
 //               answers via useChat's addToolOutput (docs/protocol-v3.md)
 //   data-error  {code}            terminal failure (timeout / upstream_* / empty_response)
-//   [DONE]      by createUIMessageStreamResponse; keepAliveMs carries the
-//               idle-proxy heartbeat (replaces the hand-rolled `: ping`).
+//   [DONE]      hub close frame; the hub heartbeat carries the idle-proxy
+//               keep-alive (`: keep-alive` SSE comments, issue #33).
+//
+// Issue #33: the turn runs DECOUPLED from the POST connection (lib/chat/replay
+// hub): disconnects are view unsubscribes, generation finishes and persists;
+// reattach via GET /api/chat/[threadId]/stream, kill via POST /api/chat/stop.
 //
 // Deliberately dropped at the seam: reasoning parts (AGENTS rule 1 — only
 // content is forwarded/persisted), MCP tool-* chunks (chips ride data-tool),
@@ -27,7 +31,6 @@ import { eq } from "drizzle-orm";
 import {
   APICallError,
   createUIMessageStream,
-  createUIMessageStreamResponse,
   stepCountIs,
   streamText,
   type ModelMessage,
@@ -52,10 +55,11 @@ import {
   type PendingCall,
 } from "@/lib/chat/interactive";
 import { buildRenderUiTool, type GenUiNode, type RenderedCard } from "@/lib/chat/render-ui";
+import { openReplay, sseResponse } from "@/lib/chat/replay";
 
 export type ChatStreamOpts = {
-  req: Request;
-  /** Aborts the upstream call on client disconnect or first-token timeout. */
+  /** Aborts the upstream call on first-token timeout or an explicit stop
+   *  (issue #33: a client disconnect no longer aborts — the hub does). */
   controller: AbortController;
   userId: string;
   threadId: string;
@@ -187,12 +191,6 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
       }
     }
   };
-
-  const onClientAbort = () => {
-    state.clientAborted = true;
-    opts.controller.abort();
-  };
-  opts.req.signal.addEventListener("abort", onClientAbort);
 
   // v1 error-code mapping over SDK errors: provider HTTP failures keep the
   // upstream_status_N shape; an SDK-wrapped mid-stream death carries the
@@ -494,41 +492,34 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
       } catch {
         /* persistence best-effort */
       }
-      opts.req.signal.removeEventListener("abort", onClientAbort);
       opts.release();
     },
   });
 
-  const response = createUIMessageStreamResponse({
-    stream,
-    keepAliveMs: opts.heartbeatMs,
-    headers: {
-      "Cache-Control": "no-store, no-transform",
-      "X-Accel-Buffering": "no",
-      Connection: "keep-alive",
-    },
+  // Issue #33: generation is detached from this request's connection. The
+  // replay hub buffers every SSE frame; the POST response below and later
+  // reattaches (GET /api/chat/[threadId]/stream) are just views. A view
+  // cancel unsubscribes — it no longer kills the turn; the stop route
+  // (killReplay) is the explicit kill, aborting the controller so onEnd
+  // persists the partial row as `aborted: true`.
+  const replay = openReplay(opts.userId, opts.threadId, opts.heartbeatMs, () => {
+    state.clientAborted = true;
+    opts.controller.abort();
   });
-
-  // Consumer cancel without a req abort (tab close racing the request): mirrors
-  // the v1 ReadableStream.cancel() arm. Flag + abort go first so the execute's
-  // onEnd (driven by the abort) persists the partial as `aborted: true` and
-  // releases the slot — success persistence can never win that race.
-  const reader = response.body!.getReader();
-  const wrapped = new ReadableStream<Uint8Array>({
-    pull: async (ctrl) => {
-      const { done, value } = await reader.read();
-      if (done) ctrl.close();
-      else ctrl.enqueue(value);
-    },
-    cancel: (reason) => {
-      state.clientAborted = true;
-      opts.controller.abort();
-      return reader.cancel(reason);
-    },
-  });
-  return new Response(wrapped, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
-  });
+  const reader = stream.getReader();
+  void (async () => {
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        // Byte-identical to the SDK's JsonToSseTransformStream frames.
+        replay.frame(`data: ${JSON.stringify(value)}\n\n`);
+      }
+    } catch {
+      /* execute() maps every failure to a data-error chunk; a throw here is
+      the sanitized-invariant case — the stream is over either way. */
+    }
+    replay.close();
+  })();
+  return sseResponse(replay.view());
 }

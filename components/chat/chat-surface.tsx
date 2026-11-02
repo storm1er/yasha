@@ -348,8 +348,14 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
   // thread id + the full client window — with model/attachments appended as
   // extra fields. History is transport only: the server reconciles ids and
   // hydrates content from its own rows (lib/chat/request-v3.ts).
+  // `prepareReconnectToStreamRequest` is an imperative SDK callback — it reads
+  // the thread ref at RESUME time, never during render, but the compiler
+  // attributes the whole transport construction to the render phase (scoped
+  // disable below). Undefined ⇒ default URL, which matches no hub while no
+  // thread is open (204, no-resume).
   const transport = useMemo(
     () =>
+      // eslint-disable-next-line react-hooks/refs
       new DefaultChatTransport<YashaUIMessage>({
         api: "/api/chat",
         fetch: (url, init) =>
@@ -362,19 +368,27 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
         prepareSendMessagesRequest: ({ messages, body }) => ({
           body: { messages, ...(body ?? {}) },
         }),
+        // Issue #33 reattach: point the SDK's `GET ${api}/${chatId}/stream`
+        // probe at the CURRENT thread's replay hub (the chat id is constant —
+        // the thread lives in a ref, not the chat identity).
+        prepareReconnectToStreamRequest: () => {
+          const t = threadIdRef.current;
+          return { api: t ? `/api/chat/${encodeURIComponent(t)}/stream` : undefined };
+        },
       }),
     [router]
   );
 
-  const { messages, setMessages, sendMessage, stop, status, addToolOutput } = useChat<YashaUIMessage>({
-    transport,
-    // Answering an interactive ask (addToolOutput) immediately sends the v3
-    // resume request carrying the tool output (docs/protocol-v3.md).
-    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
-    // Transport-level failure (HTTP status, network death): the sent user
-    // message stays visible next to the error + Retry action below.
-    onError: () => setError("error"),
-  });
+  const { messages, setMessages, sendMessage, stop, status, addToolOutput, resumeStream } =
+    useChat<YashaUIMessage>({
+      transport,
+      // Answering an interactive ask (addToolOutput) immediately sends the v3
+      // resume request carrying the tool output (docs/protocol-v3.md).
+      sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
+      // Transport-level failure (HTTP status, network death): the sent user
+      // message stays visible next to the error + Retry action below.
+      onError: () => setError("error"),
+    });
   const streaming = status === "submitted" || status === "streaming";
   const projected = useMemo(() => projectMessages(messages, streaming), [messages, streaming]);
 
@@ -528,7 +542,7 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
         return;
       }
       const data = (await res.json()) as {
-        thread?: { model?: string | null };
+        thread?: { model?: string | null; generating?: boolean };
         messages: ServerMessage[];
       };
       if (alive) {
@@ -536,6 +550,9 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
         setLoadingHistory(false);
         setThreadModel(data.thread?.model ?? null);
         setMessages(storedToUiMessages(data.messages));
+        // Issue #33: the turn may still be generating server-side (reload or
+        // reconnect mid-turn) — reattach and replay it live from frame zero.
+        if (data.thread?.generating === true) void resumeStream();
       }
     };
     let alive = true;
@@ -548,7 +565,28 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
     return () => {
       alive = false;
     };
-  }, [initialThreadId, router, shell, setMessages, stop]);
+  }, [initialThreadId, router, shell, setMessages, stop, resumeStream]);
+
+  /** Explicit server-side stop (issue #33): a local stop() only closes this
+   *  view — the detached generation would keep running upstream. The stop
+   *  route aborts the turn (partial persists as aborted), then we release UI.
+   *  Before the first data-thread arrives there is no id to target: the turn
+   *  finishes server-side and shows up on the thread (documented window). */
+  const stopAll = useCallback(async () => {
+    const t = threadIdRef.current;
+    if (t) {
+      try {
+        await fetch("/api/chat/stop", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: t }),
+        });
+      } catch {
+        /* best-effort: the local stop below still releases the UI */
+      }
+    }
+    stop();
+  }, [stop]);
 
   const send = useCallback(
     (rawText: string, images?: string[], audioUrl?: string) => {
@@ -735,7 +773,7 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
     onChange: setInput,
     onSubmit: () => send(input, attachments.map((a) => a.dataUrl)),
     streaming,
-    onStop: stop,
+    onStop: stopAll,
     onModelChange: handleModelChange,
     onModelCapabilities: setCaps,
     threadModel,
