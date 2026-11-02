@@ -153,6 +153,56 @@ describe("parseV3Request (unit)", () => {
     expect(r).toMatchObject({ ok: true, text: "ab" });
   });
 
+  it("resume: an assistant tail carrying tool outputs flips the trigger", () => {
+    const r = parseV3Request({
+      id: "t",
+      messages: [
+        { id: "u1", role: "user", parts: turn("book") },
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            { type: "text", text: "ignored" }, // text is not an answer
+            null, // junk
+            { type: "tool-ask_choice" }, // no toolCallId/state → filtered
+            { type: "tool-ask_choice", toolCallId: "", state: "output-available", output: "x" }, // empty id
+            { type: "tool-ask_choice", toolCallId: "c1", state: "input-available", output: "no" }, // wrong state
+            { type: "tool-ask_choice", toolCallId: "c2", state: "output-available" }, // no output
+            { type: "tool-ask_choice", toolCallId: "c3", state: "output-available", output: "Saturday" },
+            { type: "tool-confirm_action", toolCallId: "c4", state: "output-available", output: { ok: true } },
+          ],
+        },
+      ],
+    });
+    expect(r).toMatchObject({
+      ok: true,
+      kind: "resume",
+      text: "",
+      historyIds: ["u1"],
+      toolResults: [
+        { toolCallId: "c3", output: "Saturday" },
+        { toolCallId: "c4", output: '{"ok":true}' }, // non-string output is JSON-normalized
+      ],
+    });
+  });
+
+  it("resume requires at least one answer and an existing thread", () => {
+    // Assistant tail without a single valid tool output is meaningless:
+    expect(
+      parseV3Request({
+        id: "t",
+        messages: [{ id: "a", role: "assistant", parts: [{ type: "tool-ask_choice", toolCallId: "c", state: "input-available" }] }],
+      })
+    ).toMatchObject({ error: "invalid_history" });
+    // A new thread has nothing to resume:
+    expect(
+      parseV3Request({
+        id: "new",
+        messages: [{ id: "a", role: "assistant", parts: [{ type: "tool-ask_choice", toolCallId: "c", state: "output-available", output: "x" }] }],
+      })
+    ).toMatchObject({ error: "invalid_history" });
+  });
+
   it("interactive defaults to true; only booleans pass", () => {
     expect(parseV3Request(body())).toMatchObject({ interactive: true });
     expect(parseV3Request(body({ interactive: true }))).toMatchObject({ ok: true, interactive: true });

@@ -3,6 +3,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { getAuthedUserId } from "@/lib/api-auth";
 import { buildChatResponse } from "@/lib/chat/stream";
 import { parseV3Request } from "@/lib/chat/request-v3";
+import { EXPIRED_ANSWER, consumePendingAction, overlayToolResults } from "@/lib/chat/interactive";
 import { toModelMessages } from "@/lib/chat/model-messages";
 import {
   buildUpstreamMessages,
@@ -86,7 +87,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `invalid_attachment_${attachmentError}` }, { status: 400 });
   }
   if (text.length > 32000) return NextResponse.json({ error: "invalid_message" }, { status: 400 });
-  if (!text && images.length === 0 && !audio) return NextResponse.json({ error: "invalid_message" }, { status: 400 });
+  // The content requirement is the SEND trigger's: a resume carries no text —
+  // its payload is the validated tool outputs.
+  if (parsed.kind === "send" && !text && images.length === 0 && !audio)
+    return NextResponse.json({ error: "invalid_message" }, { status: 400 });
 
   // Optional client-chosen model: validated against the synced catalog. When
   // every provider is down and nothing was served, answer 502 (upstream
@@ -185,52 +189,89 @@ export async function POST(req: NextRequest) {
       .run();
   }
 
+  // ── Trigger-specific persistence (protocol v3) ─────────────────────────────
+  let userMsgId: string;
   const meta: Record<string, unknown> = {};
-  if (images.length > 0) meta.images = images;
-  if (audio) meta.audio = audio;
+  if (parsed.kind === "resume") {
+    // Every echoed tool output must match a pending action of THIS user and
+    // thread; answers (or their expiry) are overlaid onto the asking assistant
+    // row so history replays the real exchange. A resume where nothing matches
+    // is a bogus/stale client → 409; a mixed batch keeps the valid ones.
+    const now = new Date();
+    const overlays: { messageId: string; callId: string; result: string }[] = [];
+    for (const r of parsed.toolResults) {
+      const verdict = consumePendingAction(r.toolCallId, userId, threadId, now);
+      if (verdict.status === "invalid") continue;
+      overlays.push({
+        messageId: verdict.messageId,
+        callId: r.toolCallId,
+        result: verdict.status === "valid" ? r.output : EXPIRED_ANSWER,
+      });
+    }
+    if (overlays.length === 0) {
+      return NextResponse.json({ error: "invalid_history" }, { status: 409 });
+    }
+    overlayToolResults(overlays);
+    // Anchor for failure marking + queue payloads: the thread's last user row
+    // (invariant: pending rows only exist after one). Its meta is carried so
+    // markFailed annotates instead of clobbering attachments.
+    const userRow = await db
+      .select({ id: messages.id, metaJson: messages.metaJson })
+      .from(messages)
+      .where(and(eq(messages.threadId, threadId), eq(messages.role, "user")))
+      .orderBy(sql`rowid DESC`)
+      .limit(1)
+      .get();
+    userMsgId = userRow!.id;
+    if (userRow!.metaJson) Object.assign(meta, JSON.parse(userRow!.metaJson) as Record<string, unknown>);
+  } else {
+    if (images.length > 0) meta.images = images;
+    if (audio) meta.audio = audio;
 
-  // Thread tail (rowid order): drives both v3 idempotency below and the legacy
-  // same-turn dedupe (identical text + attachments resent after a failed turn).
-  const lastRow = await db
-    .select({ id: messages.id, role: messages.role, content: messages.content, metaJson: messages.metaJson })
-    .from(messages)
-    .where(eq(messages.threadId, threadId))
-    .orderBy(sql`rowid DESC`)
-    .limit(1)
-    .get();
+    // Thread tail (rowid order): drives both v3 idempotency below and the
+    // legacy same-turn dedupe (identical text + attachments resent after a
+    // failed turn).
+    const lastRow = await db
+      .select({ id: messages.id, role: messages.role, content: messages.content, metaJson: messages.metaJson })
+      .from(messages)
+      .where(eq(messages.threadId, threadId))
+      .orderBy(sql`rowid DESC`)
+      .limit(1)
+      .get();
 
-  // v3 idempotency: the client id is the row id. A resend of the stored tail
-  // (same client id after a failed turn) replaces that row; the same id living
-  // anywhere else is a forged/stale history → 409.
-  const userMsgId = parsed.clientMsgId;
-  const clash = await db
-    .select({ threadId: messages.threadId, role: messages.role })
-    .from(messages)
-    .where(eq(messages.id, userMsgId))
-    .get();
-  if (
-    clash &&
-    (clash.threadId !== threadId || clash.role !== "user" || lastRow?.id !== userMsgId)
-  ) {
-    return NextResponse.json({ error: "invalid_history" }, { status: 409 });
+    // v3 idempotency: the client id is the row id. A resend of the stored tail
+    // (same client id after a failed turn) replaces that row; the same id
+    // living anywhere else is a forged/stale history → 409.
+    userMsgId = parsed.clientMsgId;
+    const clash = await db
+      .select({ threadId: messages.threadId, role: messages.role })
+      .from(messages)
+      .where(eq(messages.id, userMsgId))
+      .get();
+    if (
+      clash &&
+      (clash.threadId !== threadId || clash.role !== "user" || lastRow?.id !== userMsgId)
+    ) {
+      return NextResponse.json({ error: "invalid_history" }, { status: 409 });
+    }
+    if (clash) {
+      await db.delete(messages).where(eq(messages.id, userMsgId)).run();
+    } else if (lastRow && lastRow.role === "user" && isSameTurn(lastRow, text, images, audio)) {
+      await db.delete(messages).where(sql`${messages.id} = ${lastRow.id}`).run();
+    }
+
+    await db
+      .insert(messages)
+      .values({
+        id: userMsgId,
+        threadId,
+        role: "user",
+        content: text,
+        metaJson: Object.keys(meta).length > 0 ? JSON.stringify(meta) : null,
+        createdAt: new Date(),
+      })
+      .run();
   }
-  if (clash) {
-    await db.delete(messages).where(eq(messages.id, userMsgId)).run();
-  } else if (lastRow && lastRow.role === "user" && isSameTurn(lastRow, text, images, audio)) {
-    await db.delete(messages).where(sql`${messages.id} = ${lastRow.id}`).run();
-  }
-
-  await db
-    .insert(messages)
-    .values({
-      id: userMsgId,
-      threadId,
-      role: "user",
-      content: text,
-      metaJson: Object.keys(meta).length > 0 ? JSON.stringify(meta) : null,
-      createdAt: new Date(),
-    })
-    .run();
 
   // Voice-message caption (AUDIO-REFACTO-PLAN §6): best-effort background
   // transcription by the audio-compatible fast model. Enqueued only when the
@@ -314,14 +355,22 @@ export async function POST(req: NextRequest) {
     mcpEnabled() && getUserMcpEnabled(userId) && !noToolSupport.has(model)
       ? await buildToolset(userId)
       : { specs: [], handles: new Map() };
+  // Interactive asks (protocol v3) ride the same tool-support degradation and
+  // the same re-arm rule as MCP tools: declared only while the model accepts
+  // tools, replayed into history only while declared.
+  const interactive = parsed.interactive && !noToolSupport.has(model);
   // Tool rounds are stored inside assistant meta_json (no extra message rows);
   // rebuild the OpenAI tool exchange so the model still sees its own calls —
   // but only when tools are actually offered, else the tool-call tokens in the
   // chat template would re-arm a model whose user opted out (it would then
   // emit fake tool calls as plain text).
-  const expandedMessages = toolset.specs.length
-    ? expandToolRounds(windowRows, upstreamMessages as ChatUpstreamMessage[])
-    : (upstreamMessages as ChatUpstreamMessage[]);
+  const expandedMessages =
+    toolset.specs.length > 0 || interactive
+      ? expandToolRounds(windowRows, upstreamMessages as ChatUpstreamMessage[], {
+          mcp: toolset.specs.length > 0,
+          client: interactive,
+        })
+      : (upstreamMessages as ChatUpstreamMessage[]);
   // Recall: synchronous SQLite read only — no LLM, negligible SSE latency.
   if (memoryEnabled() && getUserMemoryEnabled(userId)) {
     const memCtx = buildMemoryContext(userId, text);
@@ -366,6 +415,9 @@ export async function POST(req: NextRequest) {
     languageModel: provider.languageModel(upstreamModel),
     modelMessages: toModelMessages(expandedMessages),
     toolset,
+    // Interactive asks ride the same tool-support degradation: a model that
+    // 4xx'd with tools never gets ask_choice/confirm_action either.
+    interactive,
     newThread,
     firstTokenTimeoutMs,
     heartbeatMs,

@@ -324,3 +324,80 @@ describe("projectMessages", () => {
     expect(m.streaming).toBe(true);
   });
 });
+
+// ── protocol v3 interactive asks ─────────────────────────────────────────────
+
+const part = (p: Record<string, unknown>) => p as unknown as YashaUIMessage["parts"][number];
+
+describe("projectMessages — interactive asks", () => {
+  it("extracts an ask_choice ask with non-string options filtered out", () => {
+    const [m] = projectMessages(
+      [
+        msg({
+          role: "assistant",
+          parts: [
+            part({
+              type: "tool-ask_choice",
+              toolCallId: "c1",
+              state: "input-available",
+              input: { question: "Which day?", options: ["Sat", 7, "Sun"] },
+            }),
+          ],
+        }),
+      ],
+      false
+    );
+    expect(m.interactive).toEqual([
+      { toolCallId: "c1", tool: "ask_choice", question: "Which day?", options: ["Sat", "Sun"], detail: undefined, answered: undefined },
+    ]);
+  });
+
+  it("skips parts without a renderable question (streaming, partial, input-less)", () => {
+    const out = projectMessages(
+      [
+        msg({
+          role: "assistant",
+          parts: [
+            part({ type: "tool-ask_choice", toolCallId: "c0", state: "input-streaming", input: { question: "half" } }),
+            part({ type: "tool-ask_choice", toolCallId: "c1", state: "input-available", input: { options: ["a"] } }),
+            part({ type: "tool-confirm_action", toolCallId: "c2", state: "input-available" }),
+            part({ type: "data-thread", data: { threadId: "t" } }),
+          ],
+        }),
+      ],
+      false
+    );
+    expect(out).toEqual([]); // a question-less ask is not yet a visible turn
+  });
+
+  it("answered parts normalize the output; confirm keeps its detail", () => {
+    const [m] = projectMessages(
+      [
+        msg({
+          role: "assistant",
+          parts: [
+            part({
+              type: "tool-ask_choice",
+              toolCallId: "c1",
+              state: "output-available",
+              input: { question: "q?" },
+              output: { picked: "Sat" },
+            }),
+            part({
+              type: "tool-confirm_action",
+              toolCallId: "c2",
+              state: "output-available",
+              input: { question: "Ship?", detail: "irreversible" },
+              output: "confirmed",
+            }),
+            part({ type: "tool-confirm_action", toolCallId: "c3", state: "output-available", input: { question: "z?" }, output: null }),
+          ],
+        }),
+      ],
+      false
+    );
+    expect(m.interactive?.[0]?.answered).toBe('{"picked":"Sat"}');
+    expect(m.interactive?.[1]).toMatchObject({ tool: "confirm_action", detail: "irreversible", answered: "confirmed" });
+    expect(m.interactive?.[2]?.answered).toBe("null");
+  });
+});

@@ -94,6 +94,31 @@ export const messages = sqliteTable("messages", {
   createdAt: ts("created_at").notNull(),
 });
 
+// Protocol v3 pending actions (docs/protocol-v3.md): one row per client answer
+// the server is waiting for (interactive tool calls today; `kind` reserves
+// tool approvals for the next slice). Written when the assistant row that
+// asks is persisted, consumed by the next request whose history carries the
+// matching tool output. `message_id` is the row the answer gets overlaid on.
+export const pendingActions = sqliteTable("pending_actions", {
+  id: text("id").primaryKey(), // SDK toolCallId of the ask
+  threadId: text("thread_id")
+    .notNull()
+    .references(() => threads.id, { onDelete: "cascade" }),
+  userId: text("user_id")
+    .notNull()
+    .references(() => user.id, { onDelete: "cascade" }),
+  messageId: text("message_id")
+    .notNull()
+    .references(() => messages.id, { onDelete: "cascade" }),
+  kind: text("kind").$type<"tool">().notNull().default("tool"),
+  tool: text("tool").notNull(),
+  argsJson: text("args_json").notNull(),
+  // Plain timestamps (no $defaultFn): createPendingActions always supplies both.
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+  consumedAt: integer("consumed_at", { mode: "timestamp_ms" }),
+});
+
 export const apiKeys = sqliteTable("api_keys", {
   id: text("id").primaryKey(),
   userId: text("user_id")

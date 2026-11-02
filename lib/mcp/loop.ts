@@ -48,6 +48,13 @@ export type ToolRoundRecord = {
   truncated?: boolean;
   /** Persisted alongside the record (meta.tools) — same envelope as above. */
   card?: GenerativeCard;
+  /** Protocol v3 interactive tool call (server "yasha"): `callId` is the
+   *  client toolCallId the answer is validated against, `answered` flips when
+   *  a validated output is overlaid (lib/chat/interactive.ts). `result` is
+   *  the NO_ANSWER placeholder until then. */
+  client?: boolean;
+  callId?: string;
+  answered?: boolean;
 };
 
 /** Accumulates `delta.tool_calls` fragments (index-keyed, args concatenated). */
@@ -216,7 +223,9 @@ export function synthesizeToolMessages(rounds: ToolRoundRecord[]): ChatUpstreamM
   const calls: OpenAiToolCall[] = rounds.map((r, i) => ({
     id: `call_${i}`,
     type: "function" as const,
-    function: { name: openAiToolName(r.server, r.name), arguments: r.args },
+    // Interactive records carry their declared (un-prefixed) tool name — the
+    // live tool set declares exactly `ask_choice` / `confirm_action`.
+    function: { name: r.client ? r.name : openAiToolName(r.server, r.name), arguments: r.args },
   }));
   return [
     { role: "assistant", content: null, tool_calls: calls },
@@ -229,12 +238,16 @@ export function synthesizeToolMessages(rounds: ToolRoundRecord[]): ChatUpstreamM
 export function expandToolRounds(
   rows: { role: string; metaJson: string | null }[],
   upstream: ChatUpstreamMessage[],
+  // Which record kinds may be spliced back in: only what the model is being
+  // offered right now (re-arming tokens for undeclared tools invites fake
+  // calls — same rule for interactive records as for MCP ones).
+  opts: { mcp: boolean; client: boolean },
 ): ChatUpstreamMessage[] {
   const out: ChatUpstreamMessage[] = [];
   rows.forEach((row, i) => {
     const msg = upstream[i];
     if (row.role === "assistant" && row.metaJson) {
-      const rounds = parseToolRounds(row.metaJson);
+      const rounds = parseToolRounds(row.metaJson).filter((r) => (r.client ? opts.client : opts.mcp));
       if (rounds.length > 0) {
         out.push(...synthesizeToolMessages(rounds));
         // The final text rides along after the exchange; a tool-cutoff message

@@ -7,7 +7,7 @@ import { useTranslations } from "next-intl";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AlertTriangle, Check, ChevronDown, Copy, Loader2, Menu, RefreshCw, X } from "lucide-react";
-import { DefaultChatTransport } from "ai";
+import { DefaultChatTransport, lastAssistantMessageIsCompleteWithToolCalls } from "ai";
 import { useChat } from "@ai-sdk/react";
 import { Sparkle } from "@/components/brand/sparkle";
 import { useChatShell } from "@/components/chat/chat-shell";
@@ -21,6 +21,7 @@ import {
   threadIdFromMessages,
   type ChatMessage,
   type ChatMessageMeta,
+  type InteractiveAsk,
   type ServerMessage,
   type ToolChip,
   type YashaUIMessage,
@@ -126,6 +127,56 @@ function GenerativeCardView({ card }: { card: GenerativeCard }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// Protocol v3 interactive ask (ask_choice / confirm_action): the question the
+// server paused on, with answer buttons feeding addToolOutput (the resume turn
+// auto-sends). Once answered the buttons give way to the recorded answer.
+function InteractiveAskView({
+  ask,
+  disabled,
+  t,
+  onAnswer,
+}: {
+  ask: InteractiveAsk;
+  disabled: boolean;
+  t: ReturnType<typeof useTranslations>;
+  onAnswer: (ask: InteractiveAsk, output: string) => void;
+}) {
+  if (ask.answered !== undefined) {
+    return (
+      <p data-testid="ask-answered" className="text-sm text-muted-foreground">
+        {t("askAnswered", { answer: ask.answered })}
+      </p>
+    );
+  }
+  const buttons =
+    ask.tool === "ask_choice"
+      ? (ask.options ?? []).map((o) => ({ label: o, output: o }))
+      : [
+          { label: t("askConfirm"), output: "confirmed" },
+          { label: t("askCancel"), output: "cancelled" },
+        ];
+  return (
+    <div data-testid="interactive-ask" className="rounded-2xl border border-primary/30 bg-card px-4 py-3">
+      <p className="text-[15px] font-medium">{ask.question}</p>
+      {ask.detail && <p className="mt-1 text-sm text-muted-foreground">{ask.detail}</p>}
+      <div className="mt-3 flex flex-wrap gap-2">
+        {buttons.map((b) => (
+          <button
+            key={b.output}
+            type="button"
+            disabled={disabled}
+            data-testid="ask-option"
+            onClick={() => onAnswer(ask, b.output)}
+            className="rounded-full border border-primary/40 px-4 py-1.5 text-sm transition-colors hover:bg-primary/10 disabled:opacity-50"
+          >
+            {b.label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -257,8 +308,11 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
     [router]
   );
 
-  const { messages, setMessages, sendMessage, stop, status } = useChat<YashaUIMessage>({
+  const { messages, setMessages, sendMessage, stop, status, addToolOutput } = useChat<YashaUIMessage>({
     transport,
+    // Answering an interactive ask (addToolOutput) immediately sends the v3
+    // resume request carrying the tool output (docs/protocol-v3.md).
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
     // Transport-level failure (HTTP status, network death): the sent user
     // message stays visible next to the error + Retry action below.
     onError: () => setError("error"),
@@ -480,6 +534,21 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
     setMessages((prev) => (prev.at(-1)?.id === m.id ? prev.filter((x) => x.id !== m.id) : prev));
     send(m.content, m.images, m.audio);
   }
+
+  /** Answer an interactive ask (protocol v3): the output rides the trailing
+   *  assistant tool part and sendAutomaticallyWhen fires the resume request
+   *  right away — body extras carry the thread id (no send() wrapper here). */
+  const answerAsk = useCallback(
+    (ask: InteractiveAsk, output: string) => {
+      addToolOutput({
+        tool: ask.tool,
+        toolCallId: ask.toolCallId,
+        output,
+        options: { body: { id: threadIdRef.current ?? "new" } },
+      });
+    },
+    [addToolOutput]
+  );
 
   const startNewChat = useCallback(() => {
     // Reset local state first: after the first message the thread URL is set
@@ -750,6 +819,19 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
                               </ReactMarkdown>
                             </div>
                           </>
+                        )}
+                        {m.interactive && m.interactive.length > 0 && (
+                          <div className="mt-2 space-y-2">
+                            {m.interactive.map((ask) => (
+                              <InteractiveAskView
+                                key={ask.toolCallId}
+                                ask={ask}
+                                disabled={streaming}
+                                t={t}
+                                onAnswer={answerAsk}
+                              />
+                            ))}
+                          </div>
                         )}
                         {!m.streaming && (
                           <div className="mt-1 flex items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">

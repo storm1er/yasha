@@ -48,6 +48,8 @@ export type ChatMessage = {
   audioCaptionPending?: boolean;
   tools?: ToolChip[];
   segments?: MessageSegment[];
+  /** Protocol v3 interactive asks pending (or answered) on this turn. */
+  interactive?: InteractiveAsk[];
   streaming?: boolean;
   /** Set when the assistant turn for this user message failed upstream
    *  (persisted in meta.error) — renders the red retry notice. */
@@ -79,7 +81,54 @@ export type YashaDataParts = {
   error: { code: string };
 };
 
-export type YashaUIMessage = UIMessage<ChatMessageMeta, YashaDataParts>;
+/** Protocol v3 interactive tools (server lib/chat/interactive.ts) as typed
+ *  tool parts — useChat renders them from standard tool-input-* chunks and
+ *  answers via addToolOutput. `output` stays unknown: the client normalizes. */
+export type YashaToolParts = {
+  ask_choice: { input: { question?: string; options?: string[] }; output: unknown };
+  confirm_action: { input: { question?: string; detail?: string }; output: unknown };
+};
+
+export type YashaUIMessage = UIMessage<ChatMessageMeta, YashaDataParts, YashaToolParts>;
+
+/** Renderer view of one interactive ask (assistant tool part). */
+export type InteractiveAsk = {
+  toolCallId: string;
+  tool: "ask_choice" | "confirm_action";
+  question: string;
+  options?: string[];
+  detail?: string;
+  /** Set once the tool output exists (answered — buttons replaced by it). */
+  answered?: string;
+};
+
+/** Tool part → interactive ask; null for anything not renderable (other parts,
+ *  still-streaming/partial input). */
+function askFromPart(part: YashaUIMessage["parts"][number]): InteractiveAsk | null {
+  if (part.type !== "tool-ask_choice" && part.type !== "tool-confirm_action") return null;
+  if (part.state === "input-streaming") return null;
+  const input = part.input as { question?: unknown; options?: unknown; detail?: unknown } | undefined;
+  const question = typeof input?.question === "string" ? input.question : "";
+  if (!question) return null;
+  const options =
+    part.type === "tool-ask_choice" && Array.isArray(input?.options)
+      ? input.options.filter((o): o is string => typeof o === "string")
+      : undefined;
+  const answered =
+    part.state === "output-available"
+      ? typeof part.output === "string"
+        ? part.output
+        : JSON.stringify(part.output)
+      : undefined;
+  return {
+    toolCallId: part.toolCallId,
+    tool: part.type === "tool-ask_choice" ? "ask_choice" : "confirm_action",
+    question,
+    options,
+    detail: typeof input?.detail === "string" ? input.detail : undefined,
+    answered,
+  };
+}
 
 type TextPart = TextUIPart;
 
@@ -242,6 +291,7 @@ export function projectMessages(messages: YashaUIMessage[], streaming: boolean):
     }
     const tools: ToolChip[] = [];
     const segments: MessageSegment[] = [];
+    const asks: InteractiveAsk[] = [];
     for (const part of m.parts) {
       if (isTextPart(part)) {
         if (part.text === "") continue;
@@ -251,6 +301,11 @@ export function projectMessages(messages: YashaUIMessage[], streaming: boolean):
         } else {
           segments.push({ kind: "text", text: part.text });
         }
+        continue;
+      }
+      const ask = askFromPart(part);
+      if (ask) {
+        asks.push(ask);
         continue;
       }
       if (part.type !== "data-tool") continue; // data-thread/data-error: not rendered here
@@ -271,12 +326,15 @@ export function projectMessages(messages: YashaUIMessage[], streaming: boolean):
         segments.push({ kind: "tools", tools: [chip] });
       }
     }
-    if (content === "" && tools.length === 0) return; // nothing visible yet
+    // A question with no text yet is still a visible turn (the ask IS the
+    // assistant's move).
+    if (content === "" && tools.length === 0 && asks.length === 0) return; // nothing visible yet
     out.push({
       id: m.id,
       role: "assistant",
       content,
       tools: tools.length > 0 ? tools : undefined,
+      interactive: asks.length > 0 ? asks : undefined,
       // A projected row always carries at least one segment (non-empty text
       // or at least one chip — invisible-only messages are skipped above).
       segments,

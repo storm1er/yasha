@@ -35,6 +35,14 @@ import { getUserMemoryEnabled } from "@/lib/memory/prefs";
 import { createAiToolLoop } from "@/lib/mcp/ai-tools";
 import { createTurnParts, type ToolRoundRecord } from "@/lib/mcp/loop";
 import type { Toolset } from "@/lib/mcp/bridge";
+import {
+  INTERACTIVE_SERVER,
+  INTERACTIVE_TOOL_DEFS,
+  NO_ANSWER,
+  createPendingActions,
+  isInteractiveToolName,
+  type InteractiveToolName,
+} from "@/lib/chat/interactive";
 
 export type ChatStreamOpts = {
   req: Request;
@@ -49,6 +57,11 @@ export type ChatStreamOpts = {
   languageModel: LanguageModelV4;
   modelMessages: ModelMessage[];
   toolset: Toolset;
+  /** Protocol v3 (docs/protocol-v3.md): the surface can answer interactive
+   *  tool cards, so ask_choice/confirm_action join the tool set and their
+   *  tool-input-* chunks are forwarded (pending rows land at persist time).
+   *  False ⇒ the model never sees those tools. */
+  interactive: boolean;
   newThread: boolean;
   firstTokenTimeoutMs: number;
   heartbeatMs: number;
@@ -95,10 +108,11 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
   // branch below checks) — onEnd fires exactly once, so no latch is needed.
   const persist = async (extra: Record<string, unknown>) => {
     const now = new Date();
+    const assistantMsgId = crypto.randomUUID();
     await db
       .insert(messages)
       .values({
-        id: crypto.randomUUID(),
+        id: assistantMsgId,
         threadId: opts.threadId,
         role: "assistant",
         content: state.assistantText,
@@ -107,6 +121,16 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
       })
       .run();
     await db.update(threads).set({ updatedAt: now }).where(eq(threads.id, opts.threadId)).run();
+    // Interactive asks (protocol v3): the client can only answer what was
+    // rendered, and answers are only accepted against these rows.
+    const asks = toolRecords.filter((r) => r.client && r.callId);
+    if (asks.length > 0) {
+      createPendingActions(
+        { threadId: opts.threadId, userId: opts.userId, messageId: assistantMsgId },
+        asks.map((r) => ({ toolCallId: r.callId!, tool: r.name as InteractiveToolName, args: r.args })),
+        now,
+      );
+    }
     // Fire-and-forget, INSERT-only: zero latency added to the SSE path.
     if (opts.newThread && resolveEventConfig("chat.title_generation").schedule === "after_persist") {
       void enqueueJob({
@@ -174,6 +198,12 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
         sendEvent: (ev) => send({ type: "data-tool", data: ev }),
         canDispatch: () => roundsDispatched < maxRounds,
       });
+      // Interactive asks are recorded into `toolRecords` in stream order (so
+      // meta.tools, parts interleaving and the pending rows all agree).
+      const interactiveToolCalls = new Set<string>();
+      const allTools = opts.interactive
+        ? { ...(toolLoop.tools ?? {}), ...INTERACTIVE_TOOL_DEFS }
+        : toolLoop.tools;
 
       // First-token timeout: aborts the upstream call when no delta arrives.
       // clearTimeout is idempotent, so no null-ing dance is needed.
@@ -186,7 +216,7 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
         state.firstTokenSeen = true;
       };
 
-      let useTools = toolLoop.tools !== undefined;
+      let useTools = allTools !== undefined;
       let attempt = 0;
       for (;;) {
         attempt += 1;
@@ -209,9 +239,9 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
           allowSystemInMessages: true,
           abortSignal: opts.controller.signal,
           maxRetries: 0,
-          ...(useTools && toolLoop.tools
+          ...(useTools && allTools
             ? {
-                tools: toolLoop.tools,
+                tools: allTools,
                 toolChoice: "auto" as const,
                 // max tool-dispatch rounds + one final answering call; the
                 // per-round dispatch budget itself lives in canDispatch above.
@@ -254,7 +284,51 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
             else if (chunk.type === "text-delta")
               send({ type: "text-delta", id: remap(chunk.id), delta: chunk.text });
             else if (chunk.type === "text-end") send({ type: "text-end", id: remap(chunk.id) });
-            else if (chunk.type === "error") {
+            else if (
+              opts.interactive &&
+              chunk.type === "tool-input-start" &&
+              isInteractiveToolName(chunk.toolName)
+            ) {
+              // Interactive asks ride STANDARD tool chunks (docs/protocol-v3.md):
+              // useChat turns them into typed tool parts the client answers.
+              interactiveToolCalls.add(chunk.id);
+              send({ type: "tool-input-start", toolCallId: chunk.id, toolName: chunk.toolName });
+            } else if (
+              opts.interactive &&
+              chunk.type === "tool-input-delta" &&
+              interactiveToolCalls.has(chunk.id)
+            ) {
+              send({ type: "tool-input-delta", toolCallId: chunk.id, inputTextDelta: chunk.delta });
+            } else if (
+              opts.interactive &&
+              chunk.type === "tool-call" &&
+              isInteractiveToolName(chunk.toolName)
+            ) {
+              // The loop stops here (no execute): record the ask in stream
+              // order, then announce the finished input to the client. Args
+              // come from the SDK-parsed input (interactive args need no
+              // verbatim-delta fidelity: the record is written once, then
+              // replayed byte-stably from storage).
+              interactiveToolCalls.delete(chunk.toolCallId);
+              toolRecords.push({
+                server: INTERACTIVE_SERVER,
+                name: chunk.toolName,
+                ms: 0,
+                ok: true,
+                args: JSON.stringify(chunk.input),
+                result: NO_ANSWER,
+                client: true,
+                callId: chunk.toolCallId,
+                answered: false,
+              });
+              turnParts.onToolRound(1);
+              send({
+                type: "tool-input-available",
+                toolCallId: chunk.toolCallId,
+                toolName: chunk.toolName,
+                input: chunk.input,
+              });
+            } else if (chunk.type === "error") {
               state.errorCode ??= errorToCode(chunk.error);
               break;
             } else if (chunk.type === "abort") {
@@ -308,7 +382,9 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
       }
 
       if (state.errorCode) send({ type: "data-error", data: { code: state.errorCode } });
-      else if (!state.clientAborted && state.assistantText.length === 0)
+      // An interactive ask IS output: a turn that ends on a question is not
+      // an empty response.
+      else if (!state.clientAborted && state.assistantText.length === 0 && !toolRecords.some((r) => r.client))
         send({ type: "data-error", data: { code: "empty_response" } });
 
       clearTimeout(timeout);
@@ -325,7 +401,7 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
           else await markFailed(state.errorCode);
         } else if (aborted) {
           if (state.assistantText.length > 0) await persist({ aborted: true });
-        } else if (state.assistantText.length === 0) {
+        } else if (state.assistantText.length === 0 && !toolRecords.some((r) => r.client)) {
           await markFailed("empty_response");
         } else {
           await persist({});
