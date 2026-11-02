@@ -69,6 +69,7 @@ describe("parseV3Request (unit)", () => {
       text: "hi",
       historyIds: [],
       interactive: true,
+      cards: true,
       model: undefined,
       attachments: undefined,
     });
@@ -208,6 +209,13 @@ describe("parseV3Request (unit)", () => {
     expect(parseV3Request(body({ interactive: true }))).toMatchObject({ ok: true, interactive: true });
     expect(parseV3Request(body({ interactive: false }))).toMatchObject({ ok: true, interactive: false });
     expect(parseV3Request(body({ interactive: "yes" }))).toEqual({ ok: false, error: "invalid_message", status: 400 });
+  });
+
+  it("cards defaults to interactive; only booleans pass (issue #30)", () => {
+    expect(parseV3Request(body({ interactive: false }))).toMatchObject({ ok: true, cards: false });
+    expect(parseV3Request(body({ interactive: false, cards: true }))).toMatchObject({ ok: true, cards: true });
+    expect(parseV3Request(body({ cards: true }))).toMatchObject({ ok: true, cards: true });
+    expect(parseV3Request(body({ cards: "yes" }))).toEqual({ ok: false, error: "invalid_message", status: 400 });
   });
 
   it("model + attachments flow through untouched", () => {

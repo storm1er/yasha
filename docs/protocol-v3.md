@@ -14,7 +14,7 @@ tests use the same fixtures).
 | P1 request contract (parse, reconcile, id idempotency, `interactive`) | shipped | `lib/chat/request-v3.ts` |
 | P2 pending-actions gate | shipped | `pending_actions` table, `lib/chat/interactive.ts` |
 | P3 interactive tools (`ask_choice`/`confirm_action`) + resume | shipped | web renders + answers; Android sends `interactive: false` |
-| Tier-1 generative UI `render_ui` (issue #28) | shipped | `data-card` chunk + `meta.cards`; web-only (gated by `interactive`), see §Response |
+| Tier-1 generative UI `render_ui` (issue #28) | shipped | `data-card` chunk + `meta.cards`; gated by `interactive ∥ cards` (issue #30), see §Response |
 | P3 resume-stream reattach | **not built** | optional; see "Resume streams" below |
 | MCP-tool **approvals** (`tool-approval-request` / `experimental_toolApprovalSecret`) | **deferred** | the gate + overlay machinery here is the substrate; `pending_actions.kind` is reserved. The SDK's per-request message-sequence approval contract doesn't compose with the DB-hydration loop yet — tracked as a follow-up on #21 |
 
@@ -35,7 +35,9 @@ tests use the same fixtures).
    influenced by client-sent text.
 3. **Surface flag, not negotiation**: `interactive: boolean` in the body (default `true`) states
    whether *this surface* can answer cards today (floaty: `false`). The server simply omits
-   interactive tools when false. Not a version handshake; there is exactly one protocol version.
+   interactive tools when false. `cards: boolean` (default = `interactive`, issue #30) gates the
+   display-only `render_ui` tool separately — Android runs `interactive: false, cards: true`.
+   Not a version handshake; there is exactly one protocol version.
 4. **Client message ids are persisted** on user turns (idempotent retry: re-POSTing the same tail
    user id after a failed turn replaces the same turn, mirroring today's same-turn dedupe).
 
@@ -67,6 +69,8 @@ Rules:
   dropped — the server never persists assistant turns from the transport.
 - New-thread flow: `id: "new"`, `messages` ends with the single user message; the server creates
   the thread and answers with the `data-thread` custom part as today (client adopts the id).
+- Body: `{ id, messages, model?, attachments?, interactive?, cards? }` (`cards` defaults to
+  `interactive`, issue #30).
 - Attachments, model validation, busy gate, audio gates, rate limits: **unchanged**.
 
 ## Response (unchanged UI-message stream + v3 additions)

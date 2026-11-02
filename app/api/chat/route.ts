@@ -359,6 +359,9 @@ export async function POST(req: NextRequest) {
   // the same re-arm rule as MCP tools: declared only while the model accepts
   // tools, replayed into history only while declared.
   const interactive = parsed.interactive && !noToolSupport.has(model);
+  // Cards ride the same degradation but are gated separately (issue #30):
+  // Android sends interactive:false + cards:true.
+  const cards = parsed.cards && !noToolSupport.has(model);
   // Tool rounds are stored inside assistant meta_json (no extra message rows);
   // rebuild the OpenAI tool exchange so the model still sees its own calls —
   // but only when tools are actually offered, else the tool-call tokens in the
@@ -418,6 +421,7 @@ export async function POST(req: NextRequest) {
     // Interactive asks ride the same tool-support degradation: a model that
     // 4xx'd with tools never gets ask_choice/confirm_action either.
     interactive,
+    cards,
     newThread,
     firstTokenTimeoutMs,
     heartbeatMs,

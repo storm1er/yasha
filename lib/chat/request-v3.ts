@@ -33,6 +33,9 @@ export type V3Request = {
   historyIds: string[];
   /** Whether this surface can answer interactive tools (default true, P3). */
   interactive: boolean;
+  /** Whether the surface renders `render_ui` cards (default = interactive,
+   *  issue #30). */
+  cards: boolean;
   /** Passthrough: validated by the route (catalog / attachment caps), not here. */
   model: unknown;
   attachments: unknown;
@@ -119,6 +122,12 @@ export function parseV3Request(body: unknown): V3Request | V3Error {
   if (typeof interactive !== "boolean") {
     return { ok: false, error: "invalid_message", status: 400 };
   }
+  // Generative-UI cards (issue #30): display-only, so a surface that cannot
+  // answer asks may still opt in. Defaults to `interactive` (web unchanged).
+  const cards = b.cards === undefined ? interactive : b.cards;
+  if (typeof cards !== "boolean") {
+    return { ok: false, error: "invalid_message", status: 400 };
+  }
 
   return {
     ok: true,
@@ -130,6 +139,7 @@ export function parseV3Request(body: unknown): V3Request | V3Error {
     toolResults,
     historyIds,
     interactive,
+    cards,
     model: b.model,
     attachments: b.attachments,
   };

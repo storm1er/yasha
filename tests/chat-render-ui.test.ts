@@ -330,6 +330,16 @@ describe("/api/chat render_ui", () => {
     expect(lastBody).toContain(`${CARD_BUDGET} cards per reply maximum`);
   });
 
+  it("interactive:false + cards:true: render_ui is offered but the asks are not", async () => {
+    const mock = scripted(() => sseToolCall("render_ui", "r1", GOOD_ARGS), () => sseChatCompletion("carded"));
+    const res = await post({ interactive: false, cards: true });
+    const chunks = await drainUi(res);
+    expect(uiData(chunks, "data-card")).toHaveLength(1);
+    expect(chunks.some((c) => c.type.startsWith("tool-input-"))).toBe(false);
+    const body = JSON.parse(mock.lastCall(CHAT)!.body!) as { tools: { function: { name: string } }[] };
+    expect(body.tools.map((t) => t.function.name)).toEqual(["render_ui"]);
+  });
+
   it("interactive:false: the model never sees render_ui", async () => {
     const mock = scripted(() => sseChatCompletion("plain"));
     const res = await post({ interactive: false });

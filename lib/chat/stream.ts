@@ -70,6 +70,10 @@ export type ChatStreamOpts = {
    *  tool-input-* chunks are forwarded (pending rows land at persist time).
    *  False ⇒ the model never sees those tools. */
   interactive: boolean;
+  /** Protocol v3 (issue #30): the surface renders `render_ui` cards
+   *  (display-only — no pending rows). Defaults to `interactive` upstream;
+   *  Android sends interactive:false + cards:true. False ⇒ no render_ui. */
+  cards: boolean;
   newThread: boolean;
   firstTokenTimeoutMs: number;
   heartbeatMs: number;
@@ -223,7 +227,8 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
       const interactiveToolCalls = new Set<string>();
       // render_ui (issue #28): execute validates; a good tree rides a
       // data-card chunk (and into meta.cards, ordered via turnParts) while the
-      // model just gets a receipt and keeps writing.
+      // model just gets a receipt and keeps writing. Gated by `cards`
+      // (issue #30) — Android takes cards without the interactive asks.
       const renderUiTool = buildRenderUiTool({
         onCard: (root) => {
           const card: RenderedCard = { id: crypto.randomUUID(), root };
@@ -234,7 +239,9 @@ export function buildChatResponse(opts: ChatStreamOpts): Response {
       });
       const allTools = opts.interactive
         ? { ...(toolLoop.tools ?? {}), ...INTERACTIVE_TOOL_DEFS, ...renderUiTool }
-        : toolLoop.tools;
+        : opts.cards
+          ? { ...(toolLoop.tools ?? {}), ...renderUiTool }
+          : toolLoop.tools;
 
       // First-token timeout: aborts the upstream call when no delta arrives.
       // clearTimeout is idempotent, so no null-ing dance is needed.
