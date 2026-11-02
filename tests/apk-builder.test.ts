@@ -40,9 +40,11 @@ vi.mock("node:child_process", () => ({
       child.stdout?.emit("data", "gradle out\n");
       child.stderr?.emit("data", "gradle err\n");
       if (ctl.writeApk) {
-        const apkDir = join(lastSpawn.workDir, "app/build/outputs/apk/debug");
+        // Follow the requested variant so release-mode builds produce their artifact.
+        const variant = args.includes("assembleRelease") ? "release" : "debug";
+        const apkDir = join(lastSpawn.workDir, "app/build/outputs/apk", variant);
         mkdirSync(apkDir, { recursive: true });
-        writeFileSync(join(apkDir, "app-debug.apk"), "APKDATA");
+        writeFileSync(join(apkDir, `app-${variant}.apk`), "APKDATA");
       }
       child.emit("close", ctl.code);
     };
@@ -92,6 +94,10 @@ afterEach(async () => {
   delete process.env.YASHA_APK_SOURCE_DIR;
   delete process.env.YASHA_APK_BUILD_TIMEOUT_MS;
   delete process.env.GRADLE_USER_HOME;
+  delete process.env.YASHA_KEYSTORE;
+  delete process.env.YASHA_KEYSTORE_PASSWORD;
+  delete process.env.YASHA_KEY_ALIAS;
+  delete process.env.YASHA_KEY_PASSWORD;
 });
 
 describe("apk-builder: build lifecycle", () => {
@@ -253,6 +259,71 @@ describe("apk-builder: build lifecycle", () => {
     await settle();
     expect(rowFor(id)!.error).toBe("toolchain_unavailable");
   });
+
+  it("YASHA_KEYSTORE switches to the signed release variant + env passthrough", async () => {
+    writeFileSync(join(sourceDir, "settings.gradle.kts"), "// src");
+    process.env.YASHA_KEYSTORE = "/tmp/release.keystore";
+    process.env.YASHA_KEYSTORE_PASSWORD = "sp";
+    process.env.YASHA_KEY_ALIAS = "yasha";
+    process.env.YASHA_KEY_PASSWORD = "kp";
+    const u = await signUp("apk10");
+    const m = await import("@/lib/apk-builder");
+    const id = userIdOf(u.username);
+    await m.rebuild(id, "https://rel.test");
+    await settle();
+    expect(rowFor(id)!.status).toBe("ready"); // mock wrote app-release.apk
+    expect(lastSpawn.args).toContain("assembleRelease");
+    expect(lastSpawn.args).not.toContain("assembleDebug");
+    expect(lastSpawn.env.YASHA_KEYSTORE).toBe("/tmp/release.keystore");
+    expect(lastSpawn.env.YASHA_KEYSTORE_PASSWORD).toBe("sp");
+    expect(lastSpawn.env.YASHA_KEY_ALIAS).toBe("yasha");
+    expect(lastSpawn.env.YASHA_KEY_PASSWORD).toBe("kp");
+  });
+
+  it("settled builds carry the APK sha256", async () => {
+    writeFileSync(join(sourceDir, "settings.gradle.kts"), "// src");
+    const u = await signUp("apk11");
+    const m = await import("@/lib/apk-builder");
+    const id = userIdOf(u.username);
+    await m.rebuild(id, "https://hash.test");
+    await settle();
+    const { createHash } = await import("node:crypto");
+    expect(rowFor(id)!.sha256).toBe(createHash("sha256").update("APKDATA").digest("hex"));
+  });
+});
+
+describe("apk-builder: in-app update builds (#34)", () => {
+  it("rebuildForUpdate borrows the caller session; replace + sweep never delete it", async () => {
+    writeFileSync(join(sourceDir, "settings.gradle.kts"), "// src");
+    const u = await signUp("updb1");
+    const id = userIdOf(u.username);
+    const m = await import("@/lib/apk-builder");
+    const now = new Date();
+    const caller = crypto.randomUUID();
+    db.insert(session)
+      .values({ id: caller, token: `borrowed-${caller}`, userId: id, expiresAt: new Date(now.getTime() + 86_400_000), createdAt: now, updatedAt: now })
+      .run();
+    const row = await m.rebuildForUpdate(id, caller, "https://u.test");
+    expect(row.sessionBorrowed).toBe(true);
+    expect(row.sessionId).toBe(caller);
+    await settle();
+    expect(rowFor(id)!.status).toBe("ready");
+    const firstToken = rowFor(id)!.token;
+    // A second update request REPLACES the borrowed row (fresh token) without
+    // ever deleting the borrowed session.
+    await m.rebuildForUpdate(id, caller, "https://u.test");
+    expect(rowFor(id)!.token).not.toBe(firstToken);
+    expect(db.select().from(session).where(eq(session.id, caller)).get()).toBeTruthy();
+    await settle();
+    expect(rowFor(id)!.status).toBe("ready");
+    // Sweeping the expired borrowed row also spares the session.
+    db.update(apkBuilds).set({ expiresAt: new Date(Date.now() - 200_000) }).where(eq(apkBuilds.userId, id)).run();
+    // Fake "now" in the past: runs (throttle starts cold in this file) yet
+    // leaves the later sweep test's fake-now sequence unthrottled.
+    m.sweepExpired(Date.now() - 61_000);
+    expect(rowFor(id)).toBeUndefined();
+    expect(db.select().from(session).where(eq(session.id, caller)).get()).toBeTruthy();
+  });
 });
 
 describe("apk-builder: claim / rebuild / sweep", () => {
@@ -369,4 +440,3 @@ describe("apk-builder: claim / rebuild / sweep", () => {
     await expect(m.buildsSettled()).resolves.toBeUndefined();
   });
 });
-

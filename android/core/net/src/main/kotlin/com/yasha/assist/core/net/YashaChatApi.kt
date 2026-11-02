@@ -31,6 +31,10 @@ interface YashaChatApi {
     suspend fun audioConfig(): ApiResult<AudioConfigDto>
     suspend fun attachmentLimits(): ApiResult<AttachmentLimitsDto>
     suspend fun fetchAppVersion(): ApiResult<AppVersionDto>
+    // Issue #34 Phase B: update-build trigger/poll + one-time APK download.
+    suspend fun fetchAppUpdate(): ApiResult<AppUpdateDto>
+    suspend fun startAppUpdate(): ApiResult<AppUpdateDto>
+    suspend fun downloadApk(path: String, dest: java.io.File, onFraction: (Float) -> Unit): ApiResult<Unit>
     suspend fun retryTranscribe(messageId: String): ApiResult<Boolean>
     fun chatStream(body: ChatRequestBody): Flow<ChatEvent>
 }

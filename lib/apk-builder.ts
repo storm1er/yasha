@@ -8,13 +8,15 @@
 // atomically and the APK file is deleted once served.
 
 import { spawn } from "node:child_process";
-import { createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import {
   copyFileSync,
   cpSync,
   existsSync,
   mkdirSync,
+  readFileSync,
   rmSync,
+  statSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { and, eq, lt, ne } from "drizzle-orm";
@@ -85,6 +87,31 @@ export function viewOf(row: ApkBuild): ApkStatusView {
   return view;
 }
 
+export type AppUpdateView = {
+  state: ApkBuildStatus;
+  downloadUrl?: string;
+  sha256?: string;
+  bytes?: number;
+  error?: string;
+};
+
+/**
+ * Status payload for the in-app updater (issue #34): link + checksum + size.
+ * `sha256` is null only on rows that settled before the column existed; `bytes`
+ * is omitted when the file already vanished (the claim path turns that into a
+ * 410, and the updater then requests a fresh build).
+ */
+export function updateViewOf(row: ApkBuild): AppUpdateView {
+  const view: AppUpdateView = { state: row.status };
+  if (row.status === "ready") {
+    view.downloadUrl = `/d/${row.token}`;
+    if (row.sha256) view.sha256 = row.sha256;
+    if (row.apkPath && existsSync(row.apkPath)) view.bytes = statSync(row.apkPath).size;
+  }
+  if (row.status === "failed" && row.error) view.error = row.error;
+  return view;
+}
+
 /** Discard the previous link (if any) and start a new build. */
 export async function rebuild(userId: string, serverUrl: string): Promise<ApkStatusView> {
   const existing = getBuild(userId);
@@ -111,8 +138,10 @@ function startFreshBuild(userId: string, serverUrl: string, existing: ApkBuild |
     token,
     serverUrl,
     sessionId,
+    sessionBorrowed: false,
     status: "queued" as ApkBuildStatus,
     apkPath: null,
+    sha256: null,
     error: null,
     updatedAt: now,
     expiresAt: new Date(now.getTime() + BUILD_TTL_MS),
@@ -128,6 +157,46 @@ function startFreshBuild(userId: string, serverUrl: string, existing: ApkBuild |
   const row = getBuild(userId)!;
   queueBuild(row.id);
   return viewOf(row);
+}
+
+/**
+ * In-app update build (issue #34, Phase B): same replace semantics as
+ * `rebuild`, but the APK bakes the caller's CURRENT session instead of a new
+ * 390-day one — token rotation then follows the app's own lifecycle. The
+ * download link still gets a fresh unguessable token; the borrowed session is
+ * marked so cleanup/sweep never logs the device out.
+ */
+export async function rebuildForUpdate(
+  userId: string,
+  sessionId: string,
+  serverUrl: string,
+): Promise<ApkBuild> {
+  const existing = getBuild(userId);
+  if (existing && existing.status === "building") return existing;
+  const now = new Date();
+  const values = {
+    token: newToken(),
+    serverUrl,
+    sessionId,
+    sessionBorrowed: true,
+    status: "queued" as ApkBuildStatus,
+    apkPath: null,
+    sha256: null,
+    error: null,
+    updatedAt: now,
+    expiresAt: new Date(now.getTime() + BUILD_TTL_MS),
+  };
+  if (existing) {
+    cleanupArtifacts(existing);
+    db.update(apkBuilds).set(values).where(eq(apkBuilds.userId, userId)).run();
+  } else {
+    db.insert(apkBuilds)
+      .values({ id: crypto.randomUUID(), userId, createdAt: now, ...values })
+      .run();
+  }
+  const row = getBuild(userId)!;
+  queueBuild(row.id);
+  return row;
 }
 
 // Builds run one at a time (gradle is heavy; single-replica assumption).
@@ -180,15 +249,22 @@ export async function runBuild(rowId: string): Promise<void> {
     const gradle = await runGradle(workDir, row.serverUrl, signSessionCookie(sessionToken), sanitize(owner.username ?? ""), {
       GRADLE_USER_HOME: gradleHome,
       ANDROID_USER_HOME: androidHome,
+      ...keystoreEnv(),
     });
     if (gradle.code !== 0) throw new Error(`gradle_failed (exit ${gradle.code}): ${gradle.tail}`);
-    const apkOut = join(workDir, "app/build/outputs/apk/debug/app-debug.apk");
+    const apkOut = join(workDir, "app/build/outputs/apk", buildVariant(), `app-${buildVariant()}.apk`);
     if (!existsSync(apkOut)) throw new Error("apk_missing");
     const finalPath = join(baseDir(), `${row.id}.apk`);
     copyFileSync(apkOut, finalPath);
     rmSync(workDir, { recursive: true, force: true });
     db.update(apkBuilds)
-      .set({ status: "ready", apkPath: finalPath, error: null, updatedAt: new Date() })
+      .set({
+        status: "ready",
+        apkPath: finalPath,
+        sha256: createHash("sha256").update(readFileSync(finalPath)).digest("hex"),
+        error: null,
+        updatedAt: new Date(),
+      })
       .where(eq(apkBuilds.id, rowId))
       .run();
   } catch (err) {
@@ -198,6 +274,24 @@ export async function runBuild(rowId: string): Promise<void> {
 
 function sanitize(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]/g, "");
+}
+
+// Gradle env vars for release signing (android/README.md §Signing). When
+// YASHA_KEYSTORE is present, builds switch to the signed release variant;
+// otherwise debug signing (loud fallback lives in the gradle build itself).
+const KEYSTORE_ENV = ["YASHA_KEYSTORE", "YASHA_KEYSTORE_PASSWORD", "YASHA_KEY_ALIAS", "YASHA_KEY_PASSWORD"] as const;
+
+function keystoreEnv(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of KEYSTORE_ENV) {
+    const value = process.env[key];
+    if (value) out[key] = value;
+  }
+  return out;
+}
+
+function buildVariant(): "release" | "debug" {
+  return process.env.YASHA_KEYSTORE ? "release" : "debug";
 }
 
 function runGradle(
@@ -214,7 +308,7 @@ function runGradle(
         "--no-daemon",
         "-p",
         workDir,
-        "assembleDebug",
+        `assemble${buildVariant() === "release" ? "Release" : "Debug"}`,
         `-PyashaServerUrl=${serverUrl}`,
         `-PyashaSessionToken=${sessionToken}`,
         `-PyashaUsername=${username}`,
@@ -273,8 +367,9 @@ export function deleteDownloadedApk(claimed: ClaimedDownload): void {
 
 export function cleanupArtifacts(row: ApkBuild): void {
   if (row.apkPath && existsSync(row.apkPath)) rmSync(row.apkPath, { force: true });
-  // A consumed build's session is live on the phone — only unused ones die.
-  if (row.status !== "consumed") db.delete(session).where(eq(session.id, row.sessionId)).run();
+  // Consumed builds' sessions live on the phone, and borrowed ones ARE the
+  // user's own login — only dedicated unused ones die with the row.
+  if (row.status !== "consumed" && !row.sessionBorrowed) db.delete(session).where(eq(session.id, row.sessionId)).run();
 }
 
 // ── Expiry sweep (throttled; called from status polls) ───────────────────────
@@ -293,7 +388,8 @@ export function sweepExpired(now = Date.now()): void {
     if (row.apkPath) rmSync(row.apkPath, { force: true });
     rmSync(join(baseDir(), "work", row.id), { recursive: true, force: true });
     db.delete(apkBuilds).where(eq(apkBuilds.id, row.id)).run();
-    // Consumed rows leave their session alive for the installed app.
-    if (row.status !== "consumed") db.delete(session).where(eq(session.id, row.sessionId)).run();
+    // Consumed rows leave their session alive for the installed app; borrowed
+    // rows never owned their session in the first place (issue #34).
+    if (row.status !== "consumed" && !row.sessionBorrowed) db.delete(session).where(eq(session.id, row.sessionId)).run();
   }
 }

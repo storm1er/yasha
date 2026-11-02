@@ -58,6 +58,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -270,11 +271,12 @@ private fun Home(vm: ChatViewModel, state: ChatUiState, onSettings: () -> Unit) 
                     // session preserved, banner + background/auto retry instead
                     // of the login form.
                     if (state.offline) OfflineBanner(vm)
-                    // Issue #34: newer server build → passive banner; the tap
-                    // opens the (Phase A) guidance dialog.
+                    // Issue #34: newer server build → banner (live phase text
+                    // while the flow runs); the tap opens the update dialog.
                     state.updateVersionName?.let { v ->
                         UpdateBanner(
                             versionName = v,
+                            flow = state.updateFlow,
                             onUpdate = { updateDialog = true },
                             onLater = { vm.dismissUpdate() },
                         )
@@ -304,47 +306,146 @@ private fun Home(vm: ChatViewModel, state: ChatUiState, onSettings: () -> Unit) 
             },
         )
     }
-    // Phase A of the update channel (issue #34): one-tap install lands with
-    // Phase B; until then the dialog explains the web re-download path.
+    // Update dialog (issue #34): closes merely tuck the flow away (the banner
+    // keeps its live phase text); the actions live inside UpdateDialog.
     if (updateDialog) {
-        AlertDialog(
-            onDismissRequest = { updateDialog = false },
-            title = { Text(stringResource(R.string.update_available_title)) },
-            text = { Text(stringResource(R.string.update_dialog_body)) },
-            confirmButton = {
-                TextButton(onClick = { updateDialog = false }) {
-                    Text(stringResource(R.string.update_action), color = MaterialTheme.colorScheme.primary)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { updateDialog = false; vm.dismissUpdate() }) {
-                    Text(stringResource(R.string.update_later))
-                }
-            },
-        )
+        UpdateDialog(vm = vm, flow = state.updateFlow, onDismiss = { updateDialog = false })
     }
 }
 
-// Update-available banner (issue #34): passive on auto-check; "Update" opens the
-// guidance dialog (the in-app installer rides this in Phase B).
+// With no flow yet the dialog explains what will happen (also the fallback
+// text when no installer gateway exists); once the flow runs it mirrors its
+// phases with the right actions.
 @Composable
-private fun UpdateBanner(versionName: String, onUpdate: () -> Unit, onLater: () -> Unit) {
+private fun UpdateDialog(vm: ChatViewModel, flow: UpdateFlow?, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.update_available_title)) },
+        text = {
+            when (flow?.phase) {
+                null -> Text(stringResource(R.string.update_dialog_body))
+                UpdatePhase.Building -> Text(stringResource(R.string.update_flow_building))
+                UpdatePhase.Downloading -> Column {
+                    val fraction = flow!!.progress
+                    Text(
+                        stringResource(
+                            R.string.update_flow_downloading_fmt,
+                            (fraction * 100).toInt().coerceIn(0, 100),
+                        ),
+                    )
+                    LinearProgressIndicator(
+                        progress = { fraction },
+                        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                    )
+                }
+                UpdatePhase.ReadyToInstall -> Text(stringResource(R.string.update_flow_ready))
+                UpdatePhase.NeedPermission -> Text(stringResource(R.string.update_flow_permission))
+                UpdatePhase.LaunchingInstaller -> Text(stringResource(R.string.update_flow_installing))
+                UpdatePhase.Failed -> UpdateErrorText(flow.error)
+            }
+        },
+        confirmButton = {
+            val confirmRes: Int?
+            val confirmAction: () -> Unit
+            when (flow?.phase) {
+                null -> {
+                    confirmRes = R.string.update_action
+                    confirmAction = { vm.startUpdate() }
+                }
+                UpdatePhase.ReadyToInstall -> {
+                    confirmRes = R.string.update_flow_install
+                    confirmAction = { vm.launchUpdateInstall() }
+                }
+                UpdatePhase.NeedPermission -> {
+                    confirmRes = R.string.update_flow_open_settings
+                    confirmAction = { vm.openInstallPermissionSettings() }
+                }
+                UpdatePhase.Failed -> {
+                    confirmRes = R.string.update_flow_retry
+                    confirmAction = { vm.startUpdate() }
+                }
+                else -> {
+                    confirmRes = null
+                    confirmAction = {}
+                }
+            }
+            if (confirmRes != null) {
+                TextButton(onClick = confirmAction) {
+                    Text(stringResource(confirmRes), color = MaterialTheme.colorScheme.primary)
+                }
+            }
+        },
+        dismissButton = {
+            when (flow?.phase) {
+                // Mid-flow "Cancel" only stops this attempt — the update stays
+                // offered (unlike "Later", which silences this exact code).
+                UpdatePhase.Building, UpdatePhase.Downloading ->
+                    TextButton(onClick = { vm.cancelUpdate() }) {
+                        Text(stringResource(R.string.cancel))
+                    }
+                null, UpdatePhase.ReadyToInstall, UpdatePhase.Failed ->
+                    TextButton(onClick = { vm.dismissUpdate(); onDismiss() }) {
+                        Text(stringResource(R.string.update_later))
+                    }
+                else -> Unit // LaunchingInstaller: no dismiss while the system prompt is up
+            }
+        },
+    )
+}
+
+// Maps the flow's stable failure codes to user copy (en + fr).
+@Composable
+private fun UpdateErrorText(code: String?) {
+    Text(
+        when (code) {
+            "timeout" -> stringResource(R.string.update_error_timeout)
+            "download", "network" -> stringResource(R.string.update_error_download)
+            "checksum" -> stringResource(R.string.update_error_checksum)
+            "conflict" -> stringResource(R.string.update_error_conflict)
+            null -> stringResource(R.string.update_error_generic)
+            else -> stringResource(R.string.update_error_fmt, code)
+        },
+    )
+}
+
+// Update banner (issue #34): shows the check result and, once the flow runs,
+// its live phase; "Update" opens the dialog, "Later" silences this code.
+@Composable
+private fun UpdateBanner(
+    versionName: String,
+    flow: UpdateFlow?,
+    onUpdate: () -> Unit,
+    onLater: () -> Unit,
+) {
     Row(
         Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.secondaryContainer)
             .padding(horizontal = 12.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            stringResource(R.string.update_available_fmt, versionName),
+            when (flow?.phase) {
+                null, UpdatePhase.Failed -> stringResource(R.string.update_available_fmt, versionName)
+                UpdatePhase.Building -> stringResource(R.string.update_flow_building_short)
+                UpdatePhase.Downloading ->
+                    stringResource(R.string.update_flow_downloading_fmt, (flow!!.progress * 100).toInt().coerceIn(0, 100))
+                UpdatePhase.ReadyToInstall, UpdatePhase.NeedPermission ->
+                    stringResource(R.string.update_flow_ready_short)
+                UpdatePhase.LaunchingInstaller -> stringResource(R.string.update_flow_installing)
+            },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSecondaryContainer,
             modifier = Modifier.weight(1f),
         )
         TextButton(onClick = onUpdate) {
-            Text(stringResource(R.string.update_action), style = MaterialTheme.typography.labelLarge)
+            Text(
+                stringResource(if (flow == null) R.string.update_action else R.string.update_open),
+                style = MaterialTheme.typography.labelLarge,
+            )
         }
-        TextButton(onClick = onLater) {
-            Text(stringResource(R.string.update_later), style = MaterialTheme.typography.labelLarge)
+        if (flow == null) {
+            TextButton(onClick = onLater) {
+                Text(stringResource(R.string.update_later), style = MaterialTheme.typography.labelLarge)
+            }
         }
     }
 }

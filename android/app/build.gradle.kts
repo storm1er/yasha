@@ -11,6 +11,12 @@ fun bakedProp(name: String, extra: String = ""): String {
     return "\"" + raw.filter { it.isLetterOrDigit() || it in extra } + "\""
 }
 
+// Release signing (android/README.md §Signing, issue #34): env-provided keystore
+// so every build this server publishes carries ONE stable signature — the only
+// way in-place updates work. Without it (dev/tests/CI), release falls back to
+// debug signing LOUDLY: such APKs cannot replace properly-signed installs.
+val releaseKeystore: String? = System.getenv("YASHA_KEYSTORE")?.takeUnless { it.isBlank() }
+
 android {
     namespace = "com.yasha.assist"
     compileSdk = 35
@@ -28,10 +34,27 @@ android {
         manifestPlaceholders["yashaCleartext"] =
             ((findProperty("yashaServerUrl") as? String) ?: "").startsWith("http://").toString()
     }
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("YASHA_KEYSTORE_PASSWORD") ?: ""
+                keyAlias = System.getenv("YASHA_KEY_ALIAS") ?: ""
+                keyPassword = System.getenv("YASHA_KEY_PASSWORD") ?: ""
+            }
+        }
+    }
     buildTypes {
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.findByName("release") ?: run {
+                logger.warn(
+                    "*** YASHA_KEYSTORE is not set — assembling a DEBUG-SIGNED release APK. " +
+                        "Fine for dev/QA; these APKs cannot update devices running a release-signed build. ***"
+                )
+                signingConfigs.getByName("debug")
+            }
         }
     }
     compileOptions {

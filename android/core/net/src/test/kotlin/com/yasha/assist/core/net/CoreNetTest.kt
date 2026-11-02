@@ -184,7 +184,62 @@ class EndpointsTest {
         assertEquals("https://example.com/api/audio/config", e.audioConfig)
         assertEquals("https://example.com/api/chat/messages/m1/transcribe", e.messageTranscribe("m1"))
         assertEquals("https://example.com/api/app/version", e.appVersion)
+        assertEquals("https://example.com/api/app-update", e.appUpdate)
         assertEquals(1568, YashaEndpoints.ATTACHMENT_MAX_SIDE)
+    }
+}
+
+class AppUpdateDtoTest {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    @Test
+    fun `ready payload decodes link checksum and stamp`() {
+        val dto = json.decodeFromString(
+            AppUpdateDto.serializer(),
+            """{"state":"ready","downloadUrl":"/d/abc","versionCode":3,"versionName":"0.3.0","sha256":"deadbeef","bytes":8123456}""",
+        )
+        assertEquals("ready", dto.state)
+        assertEquals("/d/abc", dto.downloadUrl)
+        assertEquals(3, dto.versionCode)
+        assertEquals("0.3.0", dto.versionName)
+        assertEquals("deadbeef", dto.sha256)
+        assertEquals(8123456L, dto.bytes)
+        assertNull(dto.error)
+    }
+
+    @Test
+    fun `idle and failed payloads decode with defaults`() {
+        assertEquals("idle", json.decodeFromString(AppUpdateDto.serializer(), """{"state":"idle"}""").state)
+        val failed = json.decodeFromString(
+            AppUpdateDto.serializer(),
+            """{"state":"failed","error":"gradle_failed (exit 1): boom","versionCode":3}""",
+        )
+        assertEquals("gradle_failed (exit 1): boom", failed.error)
+        assertEquals(3, failed.versionCode)
+    }
+}
+
+class DownloadErrorTest {
+    @Test
+    fun `410 maps to expired, the rest like errorCodeOf`() {
+        assertEquals("expired", YashaClient.downloadErrorOf(410, "<html>used</html>"))
+        assertEquals("unauthorized", YashaClient.downloadErrorOf(401, ""))
+        assertEquals("http_500", YashaClient.downloadErrorOf(500, "boom"))
+    }
+}
+
+class ApkHashingTest {
+    @Test
+    fun `sha256 matches the known digest and null on missing files`() {
+        val file = java.io.File.createTempFile("yasha-hash", ".bin")
+        try {
+            file.writeBytes("APKDATA".toByteArray())
+            // echo -n APKDATA | sha256sum
+            assertEquals("2ce76b4e9335982d523a05f17324d2c129e5e72b57b111d93a38a8c8689a9ed3", ApkHashing.sha256(file))
+        } finally {
+            file.delete()
+        }
+        assertNull(ApkHashing.sha256(java.io.File("/nope/missing.apk")))
     }
 }
 

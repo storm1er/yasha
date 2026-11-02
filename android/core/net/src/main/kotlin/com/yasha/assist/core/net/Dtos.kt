@@ -116,6 +116,20 @@ data class AttachmentLimitsDto(
 @Serializable
 data class AppVersionDto(val versionCode: Int, val versionName: String)
 
+// GET/POST /api/app-update (issue #34 Phase B): update-build lifecycle.
+// state: queued|building|ready|failed|idle|consumed — downloadUrl + sha256 +
+// bytes ride `ready`, error rides `failed`.
+@Serializable
+data class AppUpdateDto(
+    val state: String,
+    val downloadUrl: String? = null,
+    val versionCode: Int? = null,
+    val versionName: String? = null,
+    val sha256: String? = null,
+    val bytes: Long? = null,
+    val error: String? = null,
+)
+
 // SSE events emitted by POST /api/chat (see app/api/chat/route.ts buildStream).
 sealed interface ChatEvent {
     data class ThreadId(val id: String) : ChatEvent

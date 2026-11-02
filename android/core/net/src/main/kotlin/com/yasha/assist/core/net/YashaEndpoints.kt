@@ -17,6 +17,7 @@ data class YashaEndpoints(val baseUrl: String) {
     val audioConfig get() = "$base/api/audio/config"
     val attachmentLimits get() = "$base/api/attachment-limits"
     val appVersion get() = "$base/api/app/version"
+    val appUpdate get() = "$base/api/app-update"
     fun messageTranscribe(id: String) = "$base/api/chat/messages/$id/transcribe"
 
     companion object {

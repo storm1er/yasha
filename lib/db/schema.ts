@@ -453,10 +453,16 @@ export const apkBuilds = sqliteTable("apk_builds", {
   token: text("token").notNull().unique(),
   // Server base URL baked into the APK (from the request origin at build time).
   serverUrl: text("server_url").notNull(),
-  // better-auth session row created for the device and baked into the APK.
+  // better-auth session row baked into the APK: a dedicated row minted at
+  // build time, or — in-app update builds (issue #34) — the caller's own live
+  // session, which cleanup/sweep must never delete (`sessionBorrowed`).
   sessionId: text("session_id").notNull(),
+  sessionBorrowed: integer("session_borrowed", { mode: "boolean" }).notNull().default(false),
   status: text("status").$type<ApkBuildStatus>().notNull().default("queued"),
   apkPath: text("apk_path"),
+  // SHA-256 of the built APK (hex), computed once when the build settles —
+  // the in-app updater verifies the download against it before installing.
+  sha256: text("sha256"),
   error: text("error"),
   createdAt: ts("created_at").notNull(),
   updatedAt: ts("updated_at").notNull(),

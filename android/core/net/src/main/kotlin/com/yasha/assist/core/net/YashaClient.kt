@@ -248,6 +248,51 @@ class YashaClient(private val store: SessionStore) : YashaApi, YashaChatApi {
     override suspend fun fetchAppVersion(): ApiResult<AppVersionDto> =
         decode(call(endpoints().appVersion)) { json.decodeFromString<AppVersionDto>(it) }
 
+    // Issue #34 Phase B: update-build status + trigger (session auth, mirrors
+    // /api/app-update). The build bakes THIS session — token rotation follows
+    // the app's lifecycle.
+    override suspend fun fetchAppUpdate(): ApiResult<AppUpdateDto> =
+        decode(call(endpoints().appUpdate)) { json.decodeFromString<AppUpdateDto>(it) }
+
+    override suspend fun startAppUpdate(): ApiResult<AppUpdateDto> =
+        decode(call(endpoints().appUpdate) { post(ByteArray(0).toRequestBody(null)) }) {
+            json.decodeFromString<AppUpdateDto>(it)
+        }
+
+    // Streams the single-use /d/<token> payload to [dest]. A consumed/expired
+    // link is `expired` (the update flow re-requests a fresh build); I/O
+    // failures are `network` (the flow retries with backoff).
+    override suspend fun downloadApk(
+        path: String,
+        dest: java.io.File,
+        onFraction: (Float) -> Unit,
+    ): ApiResult<Unit> = withContext(Dispatchers.IO) {
+        try {
+            http.newCall(requestBuilder(endpoints().base + path).build()).execute().use { r ->
+                if (!r.isSuccessful) {
+                    return@use ApiResult.Err(downloadErrorOf(r.code, r.body?.string().orEmpty()))
+                }
+                val total = r.body?.contentLength()?.takeIf { it > 0 }
+                dest.outputStream().use { out ->
+                    r.body?.byteStream()?.use { input ->
+                        val buffer = ByteArray(64 * 1024)
+                        var done = 0L
+                        while (true) {
+                            val n = input.read(buffer)
+                            if (n < 0) break
+                            out.write(buffer, 0, n)
+                            done += n
+                            if (total != null) onFraction((done.toFloat() / total).coerceIn(0f, 1f))
+                        }
+                    }
+                }
+                ApiResult.Ok(Unit)
+            }
+        } catch (_: IOException) {
+            ApiResult.Err("network")
+        }
+    }
+
     override suspend fun retryTranscribe(messageId: String): ApiResult<Boolean> =
         decode(call(endpoints().messageTranscribe(messageId)) {
             post(ByteArray(0).toRequestBody("application/json".toMediaType()))
@@ -307,5 +352,10 @@ class YashaClient(private val store: SessionStore) : YashaApi, YashaChatApi {
             val code = Regex("\"error\"\\s*:\\s*\"([a-z0-9_]+)\"").find(body)?.groupValues?.get(1)
             return code ?: "http_$status"
         }
+
+        // /d/<token> answers 410 (HTML page) for consumed/expired links — the
+        // update flow special-cases it; everything else maps like errorCodeOf.
+        fun downloadErrorOf(status: Int, body: String): String =
+            if (status == 410) "expired" else errorCodeOf(status, body)
     }
 }
