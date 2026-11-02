@@ -23,6 +23,7 @@ import {
   jobs,
   memories,
   messages,
+  pendingActions,
   session,
   threadImports,
   settings,
@@ -344,6 +345,8 @@ describe("schema column defaults fire on INSERT", () => {
       account,
       threads,
       messages,
+      // Protocol v3 pending actions (FKs to threads/user/messages):
+      pendingActions,
       apiKeys,
       jobs,
       memories,
@@ -362,6 +365,6 @@ describe("schema column defaults fire on INSERT", () => {
         total += 1;
       }
     }
-    expect(total).toBe(16);
+    expect(total).toBe(19);
   });
 });

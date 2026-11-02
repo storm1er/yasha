@@ -15,6 +15,7 @@
 
 import type { TextUIPart, UIMessage } from "ai";
 import { parseGenerativeCard, type GenerativeCard } from "@/lib/chat/generative";
+import { parseStoredCards, type RenderedCard } from "@/lib/chat/render-ui";
 
 export type ToolChip = {
   server: string;
@@ -32,10 +33,12 @@ export type ToolChip = {
 };
 
 /** Ordered rendering segment of an assistant turn (issue #7): tool chips
- *  interleaved with the surrounding text in execution order. */
+ *  interleaved with the surrounding text in execution order; `card` is a
+ *  tier-1 generative-UI card (issue #28) rendered inline. */
 export type MessageSegment =
   | { kind: "text"; text: string }
-  | { kind: "tools"; tools: ToolChip[] };
+  | { kind: "tools"; tools: ToolChip[] }
+  | { kind: "card"; card: RenderedCard };
 
 export type ChatMessage = {
   id: string;
@@ -48,6 +51,8 @@ export type ChatMessage = {
   audioCaptionPending?: boolean;
   tools?: ToolChip[];
   segments?: MessageSegment[];
+  /** Protocol v3 interactive asks pending (or answered) on this turn. */
+  interactive?: InteractiveAsk[];
   streaming?: boolean;
   /** Set when the assistant turn for this user message failed upstream
    *  (persisted in meta.error) — renders the red retry notice. */
@@ -72,14 +77,63 @@ export type ChatMessageMeta = {
   turnError?: string;
 };
 
-/** Custom UI-stream parts of protocol v2 (lib/chat/stream.ts). */
+/** Custom UI-stream parts (lib/chat/stream.ts; protocol v3 adds STANDARD
+ *  tool-* chunks for interactive asks — not custom parts). */
 export type YashaDataParts = {
   thread: { threadId: string };
   tool: ToolChip;
+  card: RenderedCard;
   error: { code: string };
 };
 
-export type YashaUIMessage = UIMessage<ChatMessageMeta, YashaDataParts>;
+/** Protocol v3 interactive tools (server lib/chat/interactive.ts) as typed
+ *  tool parts — useChat renders them from standard tool-input-* chunks and
+ *  answers via addToolOutput. `output` stays unknown: the client normalizes. */
+export type YashaToolParts = {
+  ask_choice: { input: { question?: string; options?: string[] }; output: unknown };
+  confirm_action: { input: { question?: string; detail?: string }; output: unknown };
+};
+
+export type YashaUIMessage = UIMessage<ChatMessageMeta, YashaDataParts, YashaToolParts>;
+
+/** Renderer view of one interactive ask (assistant tool part). */
+export type InteractiveAsk = {
+  toolCallId: string;
+  tool: "ask_choice" | "confirm_action";
+  question: string;
+  options?: string[];
+  detail?: string;
+  /** Set once the tool output exists (answered — buttons replaced by it). */
+  answered?: string;
+};
+
+/** Tool part → interactive ask; null for anything not renderable (other parts,
+ *  still-streaming/partial input). */
+function askFromPart(part: YashaUIMessage["parts"][number]): InteractiveAsk | null {
+  if (part.type !== "tool-ask_choice" && part.type !== "tool-confirm_action") return null;
+  if (part.state === "input-streaming") return null;
+  const input = part.input as { question?: unknown; options?: unknown; detail?: unknown } | undefined;
+  const question = typeof input?.question === "string" ? input.question : "";
+  if (!question) return null;
+  const options =
+    part.type === "tool-ask_choice" && Array.isArray(input?.options)
+      ? input.options.filter((o): o is string => typeof o === "string")
+      : undefined;
+  const answered =
+    part.state === "output-available"
+      ? typeof part.output === "string"
+        ? part.output
+        : JSON.stringify(part.output)
+      : undefined;
+  return {
+    toolCallId: part.toolCallId,
+    tool: part.type === "tool-ask_choice" ? "ask_choice" : "confirm_action",
+    question,
+    options,
+    detail: typeof input?.detail === "string" ? input.detail : undefined,
+    answered,
+  };
+}
 
 type TextPart = TextUIPart;
 
@@ -158,10 +212,12 @@ function storedChips(tools: unknown): ToolChip[] {
 function partsFromStoredMeta(
   rawParts: unknown,
   chips: ToolChip[],
+  cards: RenderedCard[],
 ): YashaUIMessage["parts"] | undefined {
   if (!Array.isArray(rawParts)) return undefined;
   const out: YashaUIMessage["parts"] = [];
   let i = 0;
+  let c = 0;
   for (const entry of rawParts) {
     if (!entry || typeof entry !== "object") return undefined;
     const part = entry as { type?: unknown; text?: unknown; count?: unknown };
@@ -176,11 +232,14 @@ function partsFromStoredMeta(
       if (n < 0 || i + n > chips.length) return undefined;
       for (const chip of chips.slice(i, i + n)) out.push({ type: "data-tool", data: chip });
       i += n;
+    } else if (part.type === "card") {
+      if (c >= cards.length) return undefined;
+      out.push({ type: "data-card", data: cards[c++] });
     } else {
       return undefined;
     }
   }
-  return i === chips.length ? out : undefined;
+  return i === chips.length && c === cards.length ? out : undefined;
 }
 
 /** Thread rows → UIMessages (metadata + parts) for `useChat.setMessages`. */
@@ -200,9 +259,11 @@ export function storedToUiMessages(rows: ServerMessage[]): YashaUIMessage[] {
     let parts: YashaUIMessage["parts"] = [];
     if (m.role === "assistant") {
       const chips = storedChips(meta.tools);
-      parts = partsFromStoredMeta(meta.parts, chips) ?? [
+      const cards = parseStoredCards(meta.cards);
+      parts = partsFromStoredMeta(meta.parts, chips, cards) ?? [
         ...chips.map((chip) => ({ type: "data-tool" as const, data: chip })),
         ...(m.content ? [{ type: "text" as const, text: m.content }] : []),
+        ...cards.map((card) => ({ type: "data-card" as const, data: card })),
       ];
     } else if (m.content) {
       parts = [{ type: "text", text: m.content }];
@@ -242,6 +303,8 @@ export function projectMessages(messages: YashaUIMessage[], streaming: boolean):
     }
     const tools: ToolChip[] = [];
     const segments: MessageSegment[] = [];
+    const asks: InteractiveAsk[] = [];
+    let cardsShown = 0;
     for (const part of m.parts) {
       if (isTextPart(part)) {
         if (part.text === "") continue;
@@ -251,6 +314,16 @@ export function projectMessages(messages: YashaUIMessage[], streaming: boolean):
         } else {
           segments.push({ kind: "text", text: part.text });
         }
+        continue;
+      }
+      const ask = askFromPart(part);
+      if (ask) {
+        asks.push(ask);
+        continue;
+      }
+      if (part.type === "data-card") {
+        cardsShown += 1;
+        segments.push({ kind: "card", card: part.data });
         continue;
       }
       if (part.type !== "data-tool") continue; // data-thread/data-error: not rendered here
@@ -271,12 +344,16 @@ export function projectMessages(messages: YashaUIMessage[], streaming: boolean):
         segments.push({ kind: "tools", tools: [chip] });
       }
     }
-    if (content === "" && tools.length === 0) return; // nothing visible yet
+    // A question, a card or a chip with no text yet is still a visible turn
+    // (it IS the assistant's move).
+    if (content === "" && tools.length === 0 && asks.length === 0 && cardsShown === 0)
+      return; // nothing visible yet
     out.push({
       id: m.id,
       role: "assistant",
       content,
       tools: tools.length > 0 ? tools : undefined,
+      interactive: asks.length > 0 ? asks : undefined,
       // A projected row always carries at least one segment (non-empty text
       // or at least one chip — invisible-only messages are skipped above).
       segments,

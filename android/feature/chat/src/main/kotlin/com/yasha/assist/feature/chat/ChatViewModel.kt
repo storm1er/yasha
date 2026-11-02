@@ -10,7 +10,8 @@ import com.yasha.assist.core.audio.VadRecorderController
 import com.yasha.assist.core.capture.AttachmentEncoder
 import com.yasha.assist.core.net.ChatAttachments
 import com.yasha.assist.core.net.ChatEvent
-import com.yasha.assist.core.net.ChatRequestBody
+import com.yasha.assist.core.net.chatRequestBody
+import com.yasha.assist.core.net.GenUiParser
 import com.yasha.assist.core.net.ModelDto
 import com.yasha.assist.core.net.ApiResult
 import com.yasha.assist.core.net.CardDto
@@ -326,13 +327,28 @@ class ChatViewModel(
                             val uiTools = m.meta?.tools.orEmpty().map { t ->
                                 UiTool(t.server, t.name, if (t.ok) "done" else "error", t.args, t.result, t.truncated, t.card)
                             }
+                            // Stored generative cards (issue #30): re-validated
+                            // on read; on a parts mismatch they append after the
+                            // legacy chips+text rendering.
+                            val uiCards = m.meta?.cards.orEmpty().mapNotNull { sc ->
+                                GenUiParser.parseRoot(sc.root).takeIf { it.isNotEmpty() }?.let { UiSegment.Card(sc.id, it) }
+                            }
+                            val stored = TurnSegments.fromStored(m.meta?.parts, uiTools, uiCards)
+                            val segments = stored ?: if (uiCards.isEmpty()) {
+                                emptyList()
+                            } else {
+                                listOfNotNull(
+                                    UiSegment.Tools(uiTools).takeIf { uiTools.isNotEmpty() },
+                                    UiSegment.Text(m.content).takeIf { m.content.isNotEmpty() },
+                                ) + uiCards
+                            }
                             UiMessage(
                                 id = m.id,
                                 role = m.role,
                                 text = m.content,
                                 images = m.meta?.images.orEmpty(),
                                 tools = uiTools,
-                                segments = TurnSegments.fromStored(m.meta?.parts, uiTools).orEmpty(),
+                                segments = segments,
                                 audio = m.meta?.audio,
                                 audioTranscript = m.meta?.audioTranscript,
                                 audioTranscriptFailed = m.meta?.audioTranscriptFailed == true,
@@ -432,8 +448,8 @@ class ChatViewModel(
         var failed = false
         streamJob = scope.launch {
             client.chatStream(
-                ChatRequestBody(
-                    message = text,
+                chatRequestBody(
+                    text = text,
                     threadId = s.threadId,
                     model = s.pickedModel ?: s.defaultModel,
                     attachments = if (images.isEmpty() && audioUrl == null) {
@@ -441,6 +457,9 @@ class ChatViewModel(
                     } else {
                         ChatAttachments(images = images.ifEmpty { null }, audio = audioUrl)
                     },
+                    // The chat screen renders render_ui cards (issue #30);
+                    // asks stay off (no answer UI).
+                    cards = true,
                 ),
             ).collect { ev ->
                 when (ev) {
@@ -465,6 +484,14 @@ class ChatViewModel(
                         val tool = UiTool(ev.server, ev.name, ev.status, ev.args, ev.result, ev.truncated, ev.card)
                         msgs[msgs.lastIndex] = last.copy(
                             segments = TurnSegments.applyTool(last.segments, tool),
+                        )
+                        it.copy(messages = msgs)
+                    }
+                    is ChatEvent.RenderCard -> _state.update {
+                        val msgs = it.messages.toMutableList()
+                        val last = msgs.last()
+                        msgs[msgs.lastIndex] = last.copy(
+                            segments = TurnSegments.appendCard(last.segments, UiSegment.Card(ev.id, ev.nodes)),
                         )
                         it.copy(messages = msgs)
                     }

@@ -40,11 +40,16 @@ How Yasha works internally. Product-level description lives in the [README](../R
 ## Request flows
 
 ### Chat turn (web UI)
+
+> Protocol (issue #21, shipped): the request body is the stock AI SDK contract (protocol **v3**,
+> `docs/protocol-v3.md`) — the client sends its full window, the server reconciles ids and rebuilds
+> model input from its own DB window. Interactive tools stream as standard `tool-input-*` chunks;
+> answers return on a "resume" turn gated by the `pending_actions` table.
 1. `POST /api/chat` — auth via better-auth session cookie; attachments (images/audio) are
    validated/stored beforehand under `/data`. The client is the AI SDK's `useChat`
-   (`@ai-sdk/react`): the wire body carries only the new user turn + thread/model/attachments
-   (history is rebuilt server-side), and the response is the AI SDK **UI-message stream
-   ("protocol v2")** assembled by `lib/chat/stream.ts` — thread id via a `data-thread` part,
+   (`@ai-sdk/react`): the wire body is the client's message window (last turn = the new user
+   input; validated against the DB), and the response is the AI SDK **UI-message stream**
+   assembled by `lib/chat/stream.ts` — thread id via a `data-thread` part,
    tool chips via `data-tool`, terminal failures via `data-error {code}`.
 2. Model choice: user picks Fast/Smart; routing + capability flags come from the synced
    provider catalog (`lib/provider/catalog.ts`, TTL 60 s, stale rows served on upstream failure).
@@ -78,7 +83,7 @@ The web image ships a full Android toolchain (`docker/Dockerfile` toolchain/prew
 | Group | Tables |
 | --- | --- |
 | Auth (better-auth) | `user`, `session`, `account`, `verification` |
-| Chat | `threads`, `messages` |
+| Chat | `threads`, `messages`, `pendingActions` (protocol v3 interactive asks awaiting a client answer) |
 | Config | `settings` (instance-level key/value), `userSettings` (per-user overrides) |
 | Backends | `providers` (adapter rows; API key masked on read), `models` (synced catalog cache + capability overrides) |
 | Tools | `mcpServers`, `mcpOauth` |

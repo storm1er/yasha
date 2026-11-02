@@ -18,10 +18,9 @@ import { getSettingInt } from "@/lib/settings";
 import { outputLanguageFor } from "@/lib/user-locale";
 import {
   QUOTED_DATA_LINE,
-  TOOL_OUTPUT_PLACEHOLDER,
+  assistantTranscriptText,
   buildDatedTranscript,
   excerpt,
-  hasToolOutput,
   neutralizedBlock,
   outputLanguageLine,
 } from "./transcript";
@@ -218,7 +217,7 @@ export const handleFactExtraction: JobHandler = async ({
   const transcript = buildDatedTranscript(
     rows.map((r) => ({
       role: r.role,
-      content: r.role === "assistant" && hasToolOutput(r.metaJson) ? TOOL_OUTPUT_PLACEHOLDER : r.content,
+      content: r.role === "assistant" ? assistantTranscriptText(r.content, r.metaJson) : r.content,
       createdAt: r.createdAt,
     })),
     msgTrunc,

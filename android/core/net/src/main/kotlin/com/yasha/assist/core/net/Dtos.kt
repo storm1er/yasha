@@ -2,6 +2,7 @@ package com.yasha.assist.core.net
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
 
 @Serializable
 data class ModelsDto(
@@ -49,7 +50,15 @@ data class MessageMetaDto(
     // Server-annotated error code when the assistant turn for this user
     // message failed (e.g. "timeout") — renders the red retry notice.
     val error: String? = null,
+    // Tier-1 generative UI (issue #30): flat card list; a "card" part in
+    // `parts` consumes the next entry in order (server meta.cards).
+    val cards: List<StoredCardDto> = emptyList(),
 )
+
+/** Persisted `render_ui` card (server RenderedCard): `root` is one component
+ *  node or an array; parsed defensively by [GenUiParser]. */
+@Serializable
+data class StoredCardDto(val id: String, val root: JsonElement)
 
 @Serializable
 data class PartDto(
@@ -107,6 +116,9 @@ sealed interface ChatEvent {
         // card (lib/chat/generative.ts envelope); rendered under the chip.
         val card: CardDto? = null,
     ) : ChatEvent
+    // Tier-1 generative UI (issue #30): a validated render_ui tree to display
+    // inline (display-only — no answer flows back).
+    data class RenderCard(val id: String, val nodes: List<GenUiNode>) : ChatEvent
     data class Done(val aborted: Boolean) : ChatEvent
     data class Failure(val code: String) : ChatEvent
 }

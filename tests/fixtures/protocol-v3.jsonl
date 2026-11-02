@@ -1,0 +1,12 @@
+{"type":"data-thread","data":{"threadId":"fx-1"}}
+{"type":"text-start","id":"t0"}
+{"type":"text-delta","id":"t0","delta":"Checking "}
+{"type":"text-delta","id":"t0","delta":"the weather…"}
+{"type":"text-end","id":"t0"}
+{"type":"data-tool","data":{"server":"ketch","name":"weather","status":"running","args":"{\"city\":\"Paris\"}"}}
+{"type":"data-tool","data":{"server":"ketch","name":"weather","status":"done","args":"{\"city\":\"Paris\"}","result":"sunny 24C","ms":42,"card":{"kind":"weather","title":"Paris","body":"Sunny, 24°C","fields":[{"label":"Wind","value":"12 km/h"}],"links":[{"label":"Radar","url":"https://example.com/radar"}]}}}
+{"type":"tool-input-start","toolCallId":"tc-1","toolName":"ask_choice"}
+{"type":"tool-input-delta","toolCallId":"tc-1","inputTextDelta":"{\"question\":\"Which day?\",\"opt"}
+{"type":"tool-input-delta","toolCallId":"tc-1","inputTextDelta":"ions\":[\"Saturday\",\"Sunday\"]}"}
+{"type":"tool-input-available","toolCallId":"tc-1","toolName":"ask_choice","input":{"question":"Which day?","options":["Saturday","Sunday"]}}
+{"type":"data-error","data":{"code":"empty_response"}}

@@ -7,6 +7,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { db, ensureReady, rawSqlite } from "@/lib/db";
 import { apiKeys, importBatches, memories, threads } from "@/lib/db/schema";
 import { callRoute, signUp } from "./support/app";
+import { v3Body } from "./support/v3";
 
 import { GET as apiKeysGet, POST as apiKeysPost } from "@/app/api/api-keys/route";
 import { DELETE as apiKeyDelete } from "@/app/api/api-keys/[id]/route";
@@ -235,7 +236,7 @@ describe("heavy budget (RATE_LIMIT_HEAVY_PER_MIN, IP identity when unauthenticat
   const headersOf = (): Record<string, string> => ({ "x-forwarded-for": `203.0.118.${++n}` });
 
   it("POST /api/chat", async () => {
-    await blockedTwice(chatPost, { json: { message: "rlr" }, headers: headersOf() });
+    await blockedTwice(chatPost, { json: v3Body({ message: "rlr" }), headers: headersOf() });
   });
   it("POST /api/v1/chat/completions", async () => {
     await blockedTwice(v1Post, { json: { model: "x", messages: [{ role: "user", content: "hi" }] }, headers: headersOf() });

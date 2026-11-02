@@ -10,6 +10,7 @@ import { adminUser, callRoute, makeRequest, sessionId, signUp, waitFor, type Adm
 import { setCurrentHeaders } from "./support/request-context";
 import { bindStream, mockLemonade, modelsResponse, sseChatCompletion, streamResponse, type LemonadeMock } from "./support/lemonade";
 import { drainUi, uiData, uiErrorCode, uiText, uiThread, type UiChunk } from "./support/ui-stream";
+import { v3Body } from "./support/v3";
 import { jobs, memories, messages, settings, threadSummaries, threads } from "@/lib/db/schema";
 import { buildMemoryContext } from "@/lib/memory/recall";
 import {
@@ -50,8 +51,9 @@ async function readUi(res: Response, n: number): Promise<UiChunk[]> {
   return out;
 }
 
+/** v3 request body (protocol v3): default turn + DB-hydrated history. */
 function chatBody(over: Record<string, unknown> = {}) {
-  return { message: "hello there", ...over };
+  return v3Body({ message: "hello there", ...over });
 }
 
 async function postChat(json: Record<string, unknown>, cookie = user.cookie) {
@@ -99,13 +101,13 @@ describe("chat route validation", () => {
   it("invalid json / message / attachments", async () => {
     let res = await callRoute(chatRoute.POST, { method: "POST", path: "/api/chat", cookie: user.cookie, body: "{oops" });
     expect((await res.json() as { error: string }).error).toBe("invalid_json");
-    res = await postChat({ message: "   " });
+    res = await postChat(chatBody({ message: "   " }));
     expect((await res.json() as { error: string }).error).toBe("invalid_message"); // empty text + no images
-    res = await postChat({ message: "x".repeat(32001) });
+    res = await postChat(chatBody({ message: "x".repeat(32001) }));
     expect((await res.json() as { error: string }).error).toBe("invalid_message");
-    res = await postChat({ message: "hi", attachments: ["data:text/html,<script>"] });
+    res = await postChat(chatBody({ message: "hi", attachments: ["data:text/html,<script>"] }));
     expect(String((await res.json() as { error: string }).error)).toBe("invalid_attachment_unsupported");
-    res = await postChat({ attachments: Array.from({ length: 5 }, (_, i) => `data:image/png;base64,AAAA${i}`), message: "five" });
+    res = await postChat(chatBody({ attachments: Array.from({ length: 5 }, (_, i) => `data:image/png;base64,AAAA${i}`), message: "five" }));
     expect(String((await res.json() as { error: string }).error)).toBe("invalid_attachment_too_many");
   });
 
@@ -196,7 +198,7 @@ describe("chat happy path (new thread)", () => {
     mock.route("/v1/models", () => modelsResponse([{ id: "fast-model.test" }]));
     mock.route(CHAT, () => sseChatCompletion("nice pic"));
     const png = `data:image/png;base64,${Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString("base64")}`;
-    const res = await postChat({ message: "", attachments: [png] });
+    const res = await postChat(v3Body({ message: "", attachments: [png] }));
     await drainUi(res);
     const th = db.select().from(threads).all()[0];
     expect(th.title).toBe("Image");
@@ -513,8 +515,8 @@ describe("chat upstream failures", () => {
     bindStream(mock, stream);
     stream.pushText("first bit");
     const res = await postChat(chatBody());
-    const chunks = await readUi(res, 3); // data-thread, text-start, one delta
-    expect(chunks[2].type).toBe("text-delta");
+    const chunks = await readUi(res, 4); // data-thread, start-step, text-start, one delta
+    expect(chunks[3].type).toBe("text-delta");
     stream.pushText(" more"); // sent while cancelling → write may throw (caught)
     await res.body!.cancel();
     const threadId = uiThread(chunks);
@@ -785,7 +787,7 @@ describe("chat persist edge arms", () => {
     const mock = mockLemonade();
     baseMock(mock);
     const png = `data:image/png;base64,${Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString("base64")}`;
-    const res = await postChat({ message: 42, attachments: [png] });
+    const res = await postChat(chatBody({ message: 42, attachments: [png] }));
     expect(res.status).toBe(200);
     await drainUi(res);
     expect(db.select().from(threads).all()[0].title).toBe("Image");
@@ -845,23 +847,23 @@ describe("attachment turns follow the plain model fallback chain", () => {
     mock.route("/v1/models", () => models());
     mock.route(CHAT, () => sseChatCompletion("hi"));
 
-    let res = await postChat({ message: "text turn" });
+    let res = await postChat(v3Body({ message: "text turn" }));
     await drainUi(res);
     const th = db.select().from(threads).all()[0];
     expect(th.model).toBe("default:fast-model.test");
 
-    res = await postChat({ message: "what is this", threadId: th.id, attachments: [png] });
+    res = await postChat(v3Body({ message: "what is this", threadId: th.id, attachments: [png] }));
     await drainUi(res);
     expect((JSON.parse(mock.lastCall(CHAT)!.body!) as { model: string }).model).toBe("fast-model.test");
 
-    res = await postChat({ message: "use other", threadId: th.id, attachments: [png], model: "default:other-model.test" });
+    res = await postChat(v3Body({ message: "use other", threadId: th.id, attachments: [png], model: "default:other-model.test" }));
     await drainUi(res);
     expect((JSON.parse(mock.lastCall(CHAT)!.body!) as { model: string }).model).toBe("other-model.test");
     // explicit body-model persists onto the thread (existing behavior)…
     expect(db.select().from(threads).all()[0].model).toBe("default:other-model.test");
 
     // …so later turns (attachments or not) follow the thread's model
-    res = await postChat({ message: "back to text", threadId: th.id });
+    res = await postChat(v3Body({ message: "back to text", threadId: th.id }));
     await drainUi(res);
     expect((JSON.parse(mock.lastCall(CHAT)!.body!) as { model: string }).model).toBe("other-model.test");
   });
@@ -870,7 +872,7 @@ describe("attachment turns follow the plain model fallback chain", () => {
     const mock = mockLemonade();
     mock.route("/v1/models", () => models());
     mock.route(CHAT, () => sseChatCompletion("pic"));
-    const res = await postChat({ message: "", attachments: [png] });
+    const res = await postChat(v3Body({ message: "", attachments: [png] }));
     await drainUi(res);
     const th = db.select().from(threads).all()[0];
     expect(th.model).toBe("default:fast-model.test");

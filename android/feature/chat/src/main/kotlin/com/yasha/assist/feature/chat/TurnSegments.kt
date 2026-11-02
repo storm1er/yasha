@@ -1,22 +1,31 @@
 package com.yasha.assist.feature.chat
 
+import com.yasha.assist.core.net.GenUiNode
 import com.yasha.assist.core.net.PartDto
 
 /** Ordered rendering segments of one assistant turn (issue #7): tool chips
- *  interleaved with the surrounding text in execution order. */
+ *  interleaved with the surrounding text in execution order. Issue #30 adds
+ *  display-only generative cards. */
 sealed interface UiSegment {
     data class Text(val text: String) : UiSegment
     data class Tools(val tools: List<UiTool>) : UiSegment
+    data class Card(val id: String, val nodes: List<GenUiNode>) : UiSegment
 }
 
 object TurnSegments {
-    /** Stored `meta.parts` + flat tool chips → ordered segments; null when
-     *  absent or malformed (legacy rows keep rendering chips above the text).
-     *  A "tools" part consumes the next `count` entries of the flat list. */
-    fun fromStored(parts: List<PartDto>?, tools: List<UiTool>): List<UiSegment>? {
+    /** Stored `meta.parts` + flat tool chips + flat cards → ordered segments;
+     *  null when absent or malformed (legacy rows keep rendering chips above
+     *  the text). A "tools" part consumes the next `count` chips; a "card"
+     *  part consumes the next card (server meta.cards, issue #30). */
+    fun fromStored(
+        parts: List<PartDto>?,
+        tools: List<UiTool>,
+        cards: List<UiSegment.Card> = emptyList(),
+    ): List<UiSegment>? {
         if (parts == null || parts.isEmpty()) return null
         val out = ArrayList<UiSegment>(parts.size)
         var i = 0
+        var c = 0
         for (p in parts) {
             when (p.type) {
                 "text" -> {
@@ -28,10 +37,14 @@ object TurnSegments {
                     out.add(UiSegment.Tools(tools.subList(i, i + p.count).toList()))
                     i += p.count
                 }
+                "card" -> {
+                    if (c >= cards.size) return null
+                    out.add(cards[c++])
+                }
                 else -> return null
             }
         }
-        return if (i == tools.size) out else null
+        return if (i == tools.size && c == cards.size) out else null
     }
 
     /** Live SSE: a text delta extends the trailing text segment or opens one
@@ -44,6 +57,11 @@ object TurnSegments {
             segments + UiSegment.Text(delta)
         }
     }
+
+    /** Live SSE: a render_ui card arrives — its own segment, in stream order
+     *  (cards are terminal on arrival, unlike the chip state machine). */
+    fun appendCard(segments: List<UiSegment>, card: UiSegment.Card): List<UiSegment> =
+        segments + card
 
     /** Live SSE: terminal events replace their running chip inside the
      *  trailing tools segment; a chip after text starts a new round. */

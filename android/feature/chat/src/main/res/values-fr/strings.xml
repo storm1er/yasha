@@ -226,6 +226,8 @@
     <string name="tool_args">Arguments</string>
     <string name="tool_result">Résultat</string>
     <string name="tool_no_result">En attente de la fin de l\'outil…</string>
+    <string name="gen_ui_prev">Diapositive précédente</string>
+    <string name="gen_ui_next">Diapositive suivante</string>
     <string name="tools_title">Outils</string>
     <string name="tools_intro">Autorise l\'assistant à utiliser des outils externes (recherche web) pendant les conversations.</string>
     <string name="tools_follow">Utiliser les outils quand ils sont disponibles</string>

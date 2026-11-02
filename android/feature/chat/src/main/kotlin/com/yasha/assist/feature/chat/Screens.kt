@@ -791,6 +791,11 @@ private fun MessageRow(msg: UiMessage, isLast: Boolean, onRetryTranscribe: (Stri
                             streaming = msg.streaming && i == lastTextIndex,
                             modifier = Modifier.fillMaxWidth(),
                         )
+                        is UiSegment.Card -> {
+                            // Tier-1 generative UI (issue #30).
+                            GenUiCard(seg.nodes)
+                            Spacer(Modifier.height(8.dp))
+                        }
                     }
                 }
                 if (msg.streaming && msg.text.isEmpty()) {

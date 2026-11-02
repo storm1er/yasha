@@ -14,6 +14,7 @@ import { ensureReady } from "@/lib/db";
 import { setUserMcpEnabled } from "@/lib/mcp/prefs";
 import { db, setFastModel, setSetting } from "./support/db";
 import { callRoute, makeRequest, sessionId, signUp, waitFor, type TestUser } from "./support/app";
+import { v3Body } from "./support/v3";
 import { mockLemonade, sseChatCompletion, streamResponse } from "./support/lemonade";
 import { drainUi, uiData, uiErrorCode, uiText, uiThread, type UiChunk } from "./support/ui-stream";
 import { setCurrentHeaders } from "./support/request-context";
@@ -107,7 +108,7 @@ async function post(json: Record<string, unknown>) {
     method: "POST",
     path: "/api/chat",
     cookie: user.cookie,
-    json: { message: "hi", ...json },
+    json: v3Body({ message: "hi", ...json }),
   });
 }
 
@@ -149,7 +150,10 @@ describe("chat loop (MCP tools → AI SDK rounds)", () => {
     mockedBuild.mockResolvedValue(toolset(0));
     const mock = mockLemonade();
     mock.route("/v1/chat/completions", () => sseText("plain answer"));
-    const res = await post({ message: "hello" });
+    // interactive:false — the tool-free assertion is about the whole tool
+    // surface (MCP AND interactive asks); see chat-interactive tests for the
+    // interactive-on behavior.
+    const res = await post({ message: "hello", interactive: false });
     const chunks = await drainUi(res);
     expect(uiText(chunks)).toBe("plain answer");
     expect(toolEvents(chunks)).toEqual([]);
@@ -323,7 +327,7 @@ describe("chat loop (MCP tools → AI SDK rounds)", () => {
     setSetting("mcp.enabled", "false");
     const mock = mockLemonade();
     mock.route("/v1/chat/completions", () => sseText("plain"));
-    const res = await post({ message: "go" });
+    const res = await post({ message: "go", interactive: false });
     expect(uiText(await drainUi(res))).toBe("plain");
     expect(mockedBuild).not.toHaveBeenCalled();
     const body = JSON.parse(mock.lastCall("/v1/chat/completions")!.body!) as Record<string, unknown>;
@@ -362,7 +366,7 @@ describe("chat loop (MCP tools → AI SDK rounds)", () => {
       .run();
     const mock = mockLemonade();
     mock.route("/v1/chat/completions", () => sseText("replied"));
-    const res = await post({ threadId: "th-mcpoff", message: "again" });
+    const res = await post({ threadId: "th-mcpoff", message: "again", interactive: false });
     expect(uiText(await drainUi(res))).toBe("replied");
     expect(mockedBuild).not.toHaveBeenCalled();
     const body = JSON.parse(mock.lastCall("/v1/chat/completions")!.body!) as {
@@ -518,14 +522,15 @@ describe("chat loop (MCP tools → AI SDK rounds)", () => {
       method: "POST",
       path: "/api/chat",
       cookie: user.cookie,
-      json: { message: "go" },
+      json: v3Body({ message: "go" }),
       signal: ac.signal,
     });
     setCurrentHeaders(req.headers);
     const res = await chatRoute.POST(req);
-    const chunks = await readUi(res, 6); // data-thread, text*, tool running, tool done
+    const chunks = await readUi(res, 7); // data-thread, start-step, text*, tool running, tool done
     expect(chunks.map((c) => c.type)).toEqual([
       "data-thread",
+      "start-step",
       "text-start",
       "text-delta",
       "text-end",
@@ -557,7 +562,7 @@ describe("chat loop (MCP tools → AI SDK rounds)", () => {
     mockedBuild.mockResolvedValue(toolset(0));
     const mock = mockLemonade();
     mock.route("/v1/chat/completions", () => sseText("x"));
-    await drainUi(await post({ message: "hi" }));
+    await drainUi(await post({ message: "hi", interactive: false }));
     const body = JSON.parse(mock.lastCall("/v1/chat/completions")!.body!) as Record<string, unknown>;
     expect(body.tools).toBeUndefined();
     expect(body.tool_choice).toBeUndefined();
@@ -577,7 +582,15 @@ describe("chat loop (MCP tools → AI SDK rounds)", () => {
     const withTools = bodies[0];
     // toolChoice "auto" is the wire default — the SDK omits it when unset
     expect(withTools.tool_choice ?? "auto").toBe("auto");
-    expect(withTools.tools).toMatchObject([{ type: "function", function: { name: "mcp__ketch__search" } }]);
+    // Interactive asks ride along (interactive defaults to true) with the
+    // generative-UI tool; MCP defs keep their prefixed names.
+    expect(withTools.tools?.map((t) => t.function.name)).toEqual([
+      "mcp__ketch__search",
+      "ask_choice",
+      "confirm_action",
+      "render_ui",
+    ]);
+    expect(withTools.tools?.[0]).toMatchObject({ type: "function", function: { name: "mcp__ketch__search" } });
   });
 });
 
@@ -626,6 +639,19 @@ describe("mcp loop helpers", () => {
     ]);
   });
 
+  it("createTurnParts interleaves cards (issue #28)", () => {
+    const t = createTurnParts();
+    t.onCard(); // card with no surrounding text: parts open with the card
+    t.onText("after");
+    expect(t.parts()).toEqual([{ type: "card" }, { type: "text", text: "after" }]);
+    t.onToolRound(1);
+    expect(t.parts()).toEqual([
+      { type: "card" },
+      { type: "text", text: "after" },
+      { type: "tools", count: 1 },
+    ]);
+  });
+
   it("parseToolRounds filters malformed rows", () => {
     expect(parseToolRounds(null)).toEqual([]);
     expect(parseToolRounds("not json")).toEqual([]);
@@ -648,7 +674,7 @@ describe("mcp loop helpers", () => {
       { role: "assistant", metaJson: '{"nope":1}' },
     ];
     const up = rows.map((r) => ({ role: r.role, content: "x" }));
-    expect(expandToolRounds(rows, up)).toEqual(up); // no rounds → untouched
+    expect(expandToolRounds(rows, up, { mcp: true, client: true })).toEqual(up); // no rounds → untouched
   });
 
   it("dispatchToolCalls runs parallel and pairs ids", async () => {
@@ -692,8 +718,30 @@ describe("mcp loop helpers", () => {
     expect(events[0].truncated).toBeUndefined();
   });
 
-  it("expandToolRounds splices synthesized rounds; cutoff turns drop empty text", () => {
-    const meta = JSON.stringify({ tools: [{ server: "k", name: "t", args: "{}", result: "R" }] });
+  it("expandToolRounds filter: undeclared kinds stay out; client records keep bare names", () => {
+    const mcpMeta = JSON.stringify({ tools: [{ server: "k", name: "t", args: "{}", result: "R" }] });
+    const clientMeta = JSON.stringify({
+      tools: [{ server: "yasha", name: "ask_choice", args: '{"question":"q"}', result: "no", client: true, callId: "c1" }],
+    });
+    const rows = [
+      { role: "assistant", metaJson: mcpMeta },
+      { role: "assistant", metaJson: clientMeta },
+    ];
+    const up = [
+      { role: "assistant", content: "a" },
+      { role: "assistant", content: "b" },
+    ];
+    // MCP declared, interactive not → client records stay out.
+    let out = expandToolRounds(rows as never, up as never, { mcp: true, client: false });
+    expect(out.map((m) => m.role)).toEqual(["assistant", "tool", "assistant", "assistant"]);
+    // Interactive declared, MCP not → only the client record re-arms, under
+    // its BARE declared name (the live tool set declares exactly ask_choice).
+    out = expandToolRounds(rows as never, up as never, { mcp: false, client: true });
+    expect(out.map((m) => m.role)).toEqual(["assistant", "assistant", "tool", "assistant"]);
+    expect(out[1].tool_calls![0]).toMatchObject({ function: { name: "ask_choice" } });
+  });
+
+  it("expandToolRounds splices synthesized rounds; cutoff turns drop empty text", () => {    const meta = JSON.stringify({ tools: [{ server: "k", name: "t", args: "{}", result: "R" }] });
     const rows = [
       { role: "user", metaJson: null },
       { role: "assistant", metaJson: meta }, // answered round
@@ -706,7 +754,7 @@ describe("mcp loop helpers", () => {
       { role: "assistant", content: "" },
       { role: "assistant", content: null },
     ];
-    const out = expandToolRounds(rows as never, up as never);
+    const out = expandToolRounds(rows as never, up as never, { mcp: true, client: true });
     expect(out.map((m) => m.role)).toEqual([
       "user",
       "assistant",

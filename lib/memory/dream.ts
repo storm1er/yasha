@@ -32,11 +32,10 @@ import { searchMessagesText } from "@/lib/search/fts";
 import { getMemoryCard, parseCardEntries, setMemoryCardTx } from "./card";
 import {
   QUOTED_DATA_LINE,
-  TOOL_OUTPUT_PLACEHOLDER,
+  assistantTranscriptText,
   buildDatedTranscript,
   excerpt,
   formatDateStamp,
-  hasToolOutput,
   neutralizedBlock,
   outputLanguageLine,
 } from "./transcript";
@@ -460,7 +459,7 @@ export const handleDreaming: JobHandler = async ({ job, cfg, signal }) => {
         const transcript = buildDatedTranscript(
           evidence.map((e) => ({
             role: e.role,
-            content: e.role === "assistant" && hasToolOutput(e.metaJson) ? TOOL_OUTPUT_PLACEHOLDER : e.content,
+            content: e.role === "assistant" ? assistantTranscriptText(e.content, e.metaJson) : e.content,
             createdAt: e.createdAt,
           })),
           msgTrunc,
