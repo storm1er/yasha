@@ -286,7 +286,10 @@ function partsFromStoredMeta(
     const part = entry as { type?: unknown; text?: unknown; count?: unknown };
     if (part.type === "text") {
       if (typeof part.text !== "string") return undefined;
-      out.push({ type: "text", text: part.text });
+      // state:"done" mirrors what the stream processor produces at text-end —
+      // lastAssistantMessageIsCompleteWithToolCalls refuses to auto-send a
+      // resume while a trailing text part is still "streaming".
+      out.push({ type: "text", text: part.text, state: "done" });
     } else if (part.type === "tools") {
       const n =
         typeof part.count === "number" && Number.isInteger(part.count) && part.count >= 0
@@ -325,11 +328,11 @@ export function storedToUiMessages(rows: ServerMessage[]): YashaUIMessage[] {
       const cards = parseStoredCards(meta.cards);
       parts = partsFromStoredMeta(meta.parts, chips, cards) ?? [
         ...chips.map(chipPart),
-        ...(m.content ? [{ type: "text" as const, text: m.content }] : []),
+        ...(m.content ? [{ type: "text" as const, text: m.content, state: "done" as const }] : []),
         ...cards.map((card) => ({ type: "data-card" as const, data: card })),
       ];
     } else if (m.content) {
-      parts = [{ type: "text", text: m.content }];
+      parts = [{ type: "text", text: m.content, state: "done" }];
     }
     return { id: m.id, role: m.role, metadata: messageMeta, parts };
   });

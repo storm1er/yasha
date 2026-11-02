@@ -28,7 +28,7 @@ const msg = (over: Partial<YashaUIMessage> & Pick<YashaUIMessage, "role">): Yash
   ...over,
 });
 
-const text = (t: string) => ({ type: "text" as const, text: t });
+const text = (t: string) => ({ type: "text" as const, text: t, state: "done" as const });
 const tool = (c: ToolChip) => ({ type: "data-tool" as const, data: c });
 const thread = (threadId: string) => ({ type: "data-thread" as const, data: { threadId } });
 const fail = (code: string) => ({ type: "data-error" as const, data: { code } });
