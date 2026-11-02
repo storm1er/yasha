@@ -5,6 +5,19 @@ generated automatically by CI from Conventional Commits landing on `main`
 ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)).
 
+## [0.2.9] - 2026-11-02
+
+### Features
+- Protocol v3 request contract — server + web cutover (issue #21, P1) (3ece92f)
+- **android:** Protocol v3 request shape — closes the app/server skew (issue #21, P4-lite) (707bad6)
+- **chat:** Interactive tools + pending_actions gate (#21, P2+P3) (87c6d8b)
+- **chat:** Tier-1 generative UI — render_ui declarative component cards (#28) (61f8d79)
+- **protocol:** Cards request flag — render_ui independent of interactive (issue #30) (0d2a0e2)
+- **android:** Render tier-1 generative UI cards (issue #30) (b42e805)
+
+### Bug Fixes
+- **chat:** Emit start-step frame so answered asks do not auto-resend (#21) (235712e)
+
 ## [0.2.8] - 2026-11-01
 
 ### Features
