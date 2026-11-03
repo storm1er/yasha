@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -57,6 +58,33 @@ private val CHART_COLORS = listOf(
 
 private fun fmt(v: Float): String =
     if (v == v.toLong().toFloat()) v.toLong().toString() else v.toString().take(6)
+
+// Grid responsiveness (render_ui on phones; web parity with
+// components/chat/gen-ui.tsx): the model declares `cols` for a desktop
+// canvas; narrow surfaces must REFLOW, not squeeze — cells never render
+// below [minGridCellDp], so a 4-col metric grid becomes 2x2 on a phone and
+// 4-across again in landscape/tablet.
+
+/** Grid gutter, in dp (kept in sync with the row/column `spacedBy`). */
+internal const val GRID_GAP_DP = 8f
+
+/** Minimum comfortable cell width: heavy content (tables, charts, nested
+ *  cards, slides) needs ~260dp to stay readable; leaves are fine at ~150dp. */
+internal fun minGridCellDp(children: List<GenUiNode>): Float =
+    if (children.any {
+            it is GenUiNode.Table || it is GenUiNode.Chart ||
+                it is GenUiNode.Card || it is GenUiNode.Slides
+        }
+    ) 260f else 150f
+
+/** How many of the AI's [declared] columns fit in [availableDp]: intent is
+ *  an upper bound, never a guarantee. Always ≥ 1 (the last column fits or
+ *  wraps inside its own cell). */
+internal fun effectiveGridCols(declared: Int, children: List<GenUiNode>, availableDp: Float): Int {
+    val min = minGridCellDp(children)
+    val fits = ((availableDp + GRID_GAP_DP) / (min + GRID_GAP_DP)).toInt()
+    return declared.coerceAtMost(fits.coerceAtLeast(1))
+}
 
 @Composable
 fun GenUiCard(nodes: List<GenUiNode>) {
@@ -153,13 +181,17 @@ fun GenUiNodeView(node: GenUiNode) {
             node.title?.let { Text(it, style = typo.titleSmall) }
             node.children.forEach { GenUiNodeView(it) }
         }
-        is GenUiNode.Grid -> Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            node.children.chunked(node.cols).forEach { rowKids ->
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    rowKids.forEach { kid ->
-                        Box(Modifier.weight(1f)) { GenUiNodeView(kid) }
+        is GenUiNode.Grid -> BoxWithConstraints(Modifier.fillMaxWidth()) {
+            // Intent-capped reflow (see effectiveGridCols above).
+            val cols = effectiveGridCols(node.cols, node.children, maxWidth.value)
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(GRID_GAP_DP.dp)) {
+                node.children.chunked(cols).forEach { rowKids ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(GRID_GAP_DP.dp)) {
+                        rowKids.forEach { kid ->
+                            Box(Modifier.weight(1f)) { GenUiNodeView(kid) }
+                        }
+                        repeat(cols - rowKids.size) { Spacer(Modifier.weight(1f)) }
                     }
-                    repeat(node.cols - rowKids.size) { Spacer(Modifier.weight(1f)) }
                 }
             }
         }
@@ -316,6 +348,10 @@ private fun DonutCanvas(node: GenUiNode.Chart, modifier: Modifier = Modifier) {
     val hole = MaterialTheme.colorScheme.surface
     androidx.compose.foundation.Canvas(modifier) {
         if (total <= 0f) return@Canvas
+        // Square bounding box, centered: drawArc defaults to the full rect,
+        // which stretches the donut into an ellipse whenever width ≠ height.
+        val d = size.minDimension
+        val origin = Offset((size.width - d) / 2f, (size.height - d) / 2f)
         var start = -90f
         node.data.forEachIndexed { i, p ->
             val sweep = (p.value / total) * 360f
@@ -324,10 +360,12 @@ private fun DonutCanvas(node: GenUiNode.Chart, modifier: Modifier = Modifier) {
                 startAngle = start,
                 sweepAngle = sweep,
                 useCenter = true,
+                topLeft = origin,
+                size = Size(d, d),
             )
             start += sweep
         }
-        drawCircle(hole, radius = size.minDimension * 0.28f, center = center)
+        drawCircle(hole, radius = d * 0.28f, center = center)
     }
 }
 
