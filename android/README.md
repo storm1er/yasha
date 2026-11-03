@@ -57,6 +57,25 @@ and wire them into a `signingConfig` in `app/build.gradle.kts` when M7 packaging
 `GET /api/app/version`, which reads the stamp from the APK source tree (Docker `VERSION`
 file, gradle-file fallback in dev). `versionName` follows **git tags**, not `package.json`.
 
+## In-app updates (issue #34, Phases B + C)
+
+With a newer stamp on the server, the app offers a self-update: `POST /api/app-update`
+ensures the server's **generic** per-version APK (no baked credentials — the installed app
+keeps its own session through the package update), the download is sha256-verified, and a
+single `PackageInstaller` commit asks the user once (`UpdateController` in `feature:chat`
+holds the whole state machine behind two seams; JVM-tested). The dialog shows the
+`CHANGELOG.md` section for the offered version. Release signing for server builds: §Signing
+above — an unsigned (debug) server build cannot update a release-signed install (§error
+"conflict" copy explains the uninstall-once path).
+
+Phase C adds the background half: `UpdateCheckWorker` (WorkManager, 6 h + on app start)
+posts an "update available" notification, and with **Settings → App updates → Auto-download
+over Wi-Fi** it also builds/downloads/verifies on unmetered networks (`AutoUpdate.kt`,
+JVM-tested), leaving a verified APK + `UpdateMeta` marker in the cache and a "ready to
+install" reminder — the install tap always happens in the foreground app. Everything is
+gated by the admin toggle `app_updates.enabled` (web Settings → General): when off, the
+endpoints 403/409, banners drop and notifications are cancelled.
+
 ## Assistant role (M2)
 
 Granting the default-assistant role works through the **system default-app picker**

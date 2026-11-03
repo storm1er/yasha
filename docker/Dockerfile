@@ -123,6 +123,9 @@ COPY --from=build /app/drizzle ./drizzle
 # root-owned dirs → EPERM "Could not set UNIX mode" and the build fails)
 COPY --chown=yasha:yasha --from=apk-prewarm /opt/yasha-android /opt/yasha-android
 COPY --chown=yasha:yasha --from=apk-prewarm /opt/gradle-home /opt/gradle-home
+# Release notes source for the in-app update dialog (issue #34 Phase C): the
+# section matching the build stamp is served by /api/app/version.
+COPY --chown=yasha:yasha --from=build /app/CHANGELOG.md /opt/yasha-android/CHANGELOG.md
 COPY --chown=yasha:yasha docker/entrypoint.sh /entrypoint.sh
 # Starts as root only to chown the bind-mounted /data, then drops to yasha (see entrypoint.sh)
 EXPOSE 3000

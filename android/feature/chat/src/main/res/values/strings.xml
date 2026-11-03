@@ -72,6 +72,8 @@
     <string name="update_error_conflict">This server signs the app with a different key than the installed one. Uninstall Yasha once, then install the fresh build from the web UI (sidebar → Get the app): conversations and account are untouched, but the assistant role must be granted again.</string>
     <string name="update_error_fmt">The update failed (%1$s).</string>
     <string name="update_error_generic">The update failed.</string>
+    <string name="update_auto_label">Auto-download over Wi-Fi</string>
+    <string name="update_auto_sub">Fetch updates on Wi-Fi in the background, then remind you to install. Nothing is installed without your tap.</string>
     <string name="error_unauthorized">Session expired — sign in again.</string>
     <string name="error_busy">Another generation is still running.</string>
     <string name="error_no_model">No model configured yet — ask your server admin.</string>
@@ -86,6 +88,7 @@
     <string name="error_network">Can\'t reach the server. Check the URL and your connection.</string>
     <string name="error_upstream">The model failed to answer. Try again.</string>
     <string name="error_generic">Something went wrong.</string>
+    <string name="error_updates_disabled">In-app updates are disabled by the server administrator.</string>
     <string name="turn_timeout">LLM timed out. Retry?</string>
     <string name="settings_title">Settings</string>
     <string name="tab_general">General</string>

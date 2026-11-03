@@ -19,6 +19,7 @@ import {
   account,
   apiKeys,
   apkBuilds,
+  apkReleaseTokens,
   importBatches,
   jobCheckpoints,
   jobs,
@@ -360,6 +361,7 @@ describe("schema column defaults fire on INSERT", () => {
       threadSummaries,
       userSettings,
       apkBuilds,
+      apkReleaseTokens, // 2 FKs (release + user); apkReleases itself has none
       importBatches,
       threadImports,
     ];
@@ -372,6 +374,6 @@ describe("schema column defaults fire on INSERT", () => {
         total += 1;
       }
     }
-    expect(total).toBe(19);
+    expect(total).toBe(21);
   });
 });

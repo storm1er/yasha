@@ -72,6 +72,8 @@
     <string name="update_error_conflict">Ce serveur signe l\'appli avec une clé différente de celle installée. Désinstallez Yasha une fois, puis installez la nouvelle version depuis l\'interface web (barre latérale → Obtenir l\'appli) : conversations et compte sont intacts, mais le rôle d\'assistant devra être accordé à nouveau.</string>
     <string name="update_error_fmt">Échec de la mise à jour (%1$s).</string>
     <string name="update_error_generic">Échec de la mise à jour.</string>
+    <string name="update_auto_label">Téléchargement automatique via Wi-Fi</string>
+    <string name="update_auto_sub">Récupère les mises à jour en arrière-plan via Wi-Fi, puis rappelle d\'installer. Rien n\'est installé sans votre validation.</string>
     <string name="error_unauthorized">Session expirée — reconnectez-vous.</string>
     <string name="error_busy">Une génération est déjà en cours.</string>
     <string name="error_no_model">Aucun modèle configuré — voyez avec l\'administrateur.</string>
@@ -86,6 +88,7 @@
     <string name="error_network">Serveur injoignable. Vérifiez l\'URL et la connexion.</string>
     <string name="error_upstream">Le modèle n\'a pas répondu. Réessayez.</string>
     <string name="error_generic">Une erreur est survenue.</string>
+    <string name="error_updates_disabled">Les mises à jour intégrées sont désactivées par l\'administrateur du serveur.</string>
     <string name="turn_timeout">Le LLM a expiré. Réessayer ?</string>
     <string name="settings_title">Paramètres</string>
     <string name="tab_general">Général</string>

@@ -1,17 +1,18 @@
 import { after } from "next/server";
-import { claimForDownload, deleteDownloadedApk } from "@/lib/apk-builder";
+import { claimForDownload, claimReleaseDownload, deleteDownloadedApk } from "@/lib/apk-builder";
 import { ensureReady } from "@/lib/db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// One-time APK download. The claim is atomic: a second visit to the same URL
-// (or anyone who copied the link) gets a 410. The APK file is deleted once the
-// response has been fully sent.
+// One-time APK download (per-user build or shared release link). The claim is
+// atomic: a second visit to the same URL (or anyone who copied the link) gets
+// a 410. Per-user APKs are deleted once streamed; release artifacts are shared
+// across users and outlive their links (issue #34, Phase C).
 export async function GET(_req: Request, { params }: { params: Promise<{ token: string }> }) {
   await ensureReady();
   const { token } = await params;
-  const claimed = claimForDownload(token);
+  const claimed = claimForDownload(token) ?? claimReleaseDownload(token);
   if (!claimed) {
     return new Response(
       "<!doctype html><title>Yasha</title><p style=\"font-family:sans-serif\">This download link is no longer valid (already used or expired). Open Yasha and request the app again.</p>" +
@@ -25,7 +26,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ token: 
   // APKs are a handful of MB — a single buffer keeps the handler trivial.
   const { readFileSync } = await import("node:fs");
   const body = readFileSync(claimed.path);
-  after(() => deleteDownloadedApk(claimed));
+  if (claimed.deleteAfterServe) after(() => deleteDownloadedApk(claimed));
   return new Response(body, {
     headers: {
       "Content-Type": "application/vnd.android.package-archive",

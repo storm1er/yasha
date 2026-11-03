@@ -114,7 +114,8 @@ data class AttachmentLimitsDto(
 // GET /api/app/version (issue #34 Phase A): the stamp the server would build.
 // Compared against BuildConfig.VERSION_CODE; newer → update banner.
 @Serializable
-data class AppVersionDto(val versionCode: Int, val versionName: String)
+// `notes` (Phase C): CHANGELOG excerpt for this version, shown in the dialog.
+data class AppVersionDto(val versionCode: Int, val versionName: String, val notes: String? = null)
 
 // GET/POST /api/app-update (issue #34 Phase B): update-build lifecycle.
 // state: queued|building|ready|failed|idle|consumed — downloadUrl + sha256 +

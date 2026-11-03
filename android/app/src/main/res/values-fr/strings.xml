@@ -6,4 +6,9 @@
     <string name="notif_title">Yasha est prêt</string>
     <string name="notif_text">Définissez Yasha comme assistant par défaut, ou utilisez la tuile / le raccourci.</string>
     <string name="notif_ask">Interroger Yasha</string>
+    <string name="update_notif_channel">Mises à jour</string>
+    <string name="update_notif_available_title">Mise à jour Yasha disponible</string>
+    <string name="update_notif_available_text">La version %1$s est prête — ouvrez Yasha pour mettre à jour.</string>
+    <string name="update_notif_ready_title">Mise à jour prête à installer</string>
+    <string name="update_notif_ready_text">%1$s a été téléchargée et vérifiée. Ouvrez Yasha et appuyez sur Installer.</string>
 </resources>

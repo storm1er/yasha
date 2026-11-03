@@ -139,11 +139,15 @@ fun YashaAppRoot(
     threadTick: Long = 0L,
     threadProvider: (() -> String?)? = null,
     onThreadApplied: () -> Unit = {},
+    updateTick: Long = 0L,
+    updateReadyProvider: (() -> Boolean)? = null,
+    onUpdateApplied: () -> Unit = {},
 ) {
     val state by vm.state.collectAsState()
     var showSettings by remember { mutableStateOf(false) }
     var appliedTick by remember { mutableStateOf(0L) }
     var appliedThreadTick by remember { mutableStateOf(0L) }
+    var appliedUpdateTick by remember { mutableStateOf(0L) }
     LaunchedEffect(Unit) { vm.start() }
     // Issue #14: coming back to the app with connectivity must recover the
     // session view immediately (the offline banner's auto-retry also runs).
@@ -172,6 +176,17 @@ fun YashaAppRoot(
             showSettings = false
             threadProvider?.invoke()?.let { vm.openThread(it) }
             onThreadApplied()
+        }
+    }
+    // Issue #34 Phase C: an "update available / ready" notification was tapped —
+    // open the updater (foreground: the installer needs it). `ready` decides
+    // whether the pre-downloaded APK is offered straight to the installer.
+    LaunchedEffect(updateTick, state.signedIn) {
+        if (updateTick > 0 && updateTick > appliedUpdateTick && state.signedIn) {
+            appliedUpdateTick = updateTick
+            showSettings = false
+            vm.onUpdateNotification(updateReadyProvider?.invoke() ?: false)
+            onUpdateApplied()
         }
     }
     when {
@@ -240,6 +255,10 @@ private fun Home(vm: ChatViewModel, state: ChatUiState, onSettings: () -> Unit) 
     val scope = rememberCoroutineScope()
     var pendingDelete by remember { mutableStateOf<ThreadRowDto?>(null) }
     var updateDialog by remember { mutableStateOf(false) }
+    // Phase C: a notification tap asks the VM to open the updater dialog.
+    LaunchedEffect(state.openUpdateTick) {
+        if (state.openUpdateTick != 0L) updateDialog = true
+    }
     val errCode = state.error
     if (errCode != null) {
         val errMsg = stringResource(ErrorStrings.messageRes(errCode))
@@ -309,7 +328,7 @@ private fun Home(vm: ChatViewModel, state: ChatUiState, onSettings: () -> Unit) 
     // Update dialog (issue #34): closes merely tuck the flow away (the banner
     // keeps its live phase text); the actions live inside UpdateDialog.
     if (updateDialog) {
-        UpdateDialog(vm = vm, flow = state.updateFlow, onDismiss = { updateDialog = false })
+        UpdateDialog(vm = vm, flow = state.updateFlow, notes = state.updateNotes, onDismiss = { updateDialog = false })
     }
 }
 
@@ -317,13 +336,29 @@ private fun Home(vm: ChatViewModel, state: ChatUiState, onSettings: () -> Unit) 
 // text when no installer gateway exists); once the flow runs it mirrors its
 // phases with the right actions.
 @Composable
-private fun UpdateDialog(vm: ChatViewModel, flow: UpdateFlow?, onDismiss: () -> Unit) {
+private fun UpdateDialog(vm: ChatViewModel, flow: UpdateFlow?, notes: String?, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.update_available_title)) },
         text = {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
             when (flow?.phase) {
-                null -> Text(stringResource(R.string.update_dialog_body))
+                null -> {
+                    Text(stringResource(R.string.update_dialog_body))
+                    // Phase C: CHANGELOG excerpt for the offered version.
+                    notes?.takeIf { it.isNotBlank() }?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 12,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        )
+                    }
+                }
                 UpdatePhase.Building -> Text(stringResource(R.string.update_flow_building))
                 UpdatePhase.Downloading -> Column {
                     val fraction = flow!!.progress
@@ -342,6 +377,7 @@ private fun UpdateDialog(vm: ChatViewModel, flow: UpdateFlow?, onDismiss: () -> 
                 UpdatePhase.NeedPermission -> Text(stringResource(R.string.update_flow_permission))
                 UpdatePhase.LaunchingInstaller -> Text(stringResource(R.string.update_flow_installing))
                 UpdatePhase.Failed -> UpdateErrorText(flow.error)
+            }
             }
         },
         confirmButton = {

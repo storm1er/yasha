@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import * as appVersionRoute from "@/app/api/app/version/route";
 import { parseGradleVersion, parseVersionFile, readAppVersion } from "@/lib/app-version";
+import { ensureReady } from "@/lib/db";
+import { setSetting } from "./support/db";
 import { callRoute } from "./support/app";
 
 let seq = 0;
@@ -154,6 +156,47 @@ describe("GET /api/app/version", () => {
     const res = await callRoute(appVersionRoute.GET, { path: "/api/app/version" });
     expect(res.status).toBe(503);
     vi.unstubAllEnvs();
+  });
+
+  it("CHANGELOG.md section matching the stamp rides along as `notes` (Phase C)", async () => {
+    const dir = join(root, `n${seq++}`);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "VERSION"), "8\t0.8.0");
+    await writeFile(
+      join(dir, "CHANGELOG.md"),
+      "# Changelog\n\n## [0.8.0] - 2026-11-03\n\n### Features\n- **app:** shiny\n\n## [0.7.0] - 2026-11-01\n\n- old\n",
+    );
+    vi.stubEnv("YASHA_APK_SOURCE_DIR", dir);
+    const res = await callRoute(appVersionRoute.GET, { path: "/api/app/version" });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.versionCode).toBe(8);
+    expect(body.notes).toContain("shiny");
+    expect(body.notes).not.toContain("old");
+    vi.unstubAllEnvs();
+  });
+
+  it("no matching CHANGELOG section → response carries no notes key", async () => {
+    const dir = join(root, `n${seq++}`);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "VERSION"), "9\t0.9.0");
+    await writeFile(join(dir, "CHANGELOG.md"), "## [0.8.0]\n- other\n");
+    vi.stubEnv("YASHA_APK_SOURCE_DIR", dir);
+    const res = await callRoute(appVersionRoute.GET, { path: "/api/app/version" });
+    expect((await res.json()).notes).toBeUndefined();
+    vi.unstubAllEnvs();
+  });
+
+  it("admin kill-switch → 403 app_updates_disabled", async () => {
+    await ensureReady();
+    setSetting("app_updates.enabled", "false");
+    try {
+      const res = await callRoute(appVersionRoute.GET, { path: "/api/app/version" });
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe("app_updates_disabled");
+    } finally {
+      setSetting("app_updates.enabled", "true");
+    }
   });
 
   // LAST: exhausts the shared auth bucket for this route key.

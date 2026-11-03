@@ -17,6 +17,7 @@ import com.yasha.assist.core.net.ApiResult
 import com.yasha.assist.core.net.CardDto
 import com.yasha.assist.core.net.SessionAccess
 import com.yasha.assist.core.net.SessionProbe
+import com.yasha.assist.core.net.UpdateMeta
 import com.yasha.assist.core.net.YashaChatApi
 import com.yasha.assist.core.net.ThreadRowDto
 import java.util.Base64
@@ -100,6 +101,13 @@ data class ChatUiState(
     // Phase B: non-null while the in-app update flow runs (build → download →
     // install); drives the dialog/banner body + buttons.
     val updateFlow: UpdateFlow? = null,
+    // Phase C: CHANGELOG excerpt for the offered version (dialog body).
+    val updateNotes: String? = null,
+    // Phase C: Wi-Fi auto-download preference (mirrors SessionStore).
+    val autoDownloadWifi: Boolean = false,
+    // Phase C: non-zero ⇒ a notification asked to open the update dialog
+    // (consumed by the UI as a LaunchedEffect key).
+    val openUpdateTick: Long = 0L,
 
 ) {
     companion object {
@@ -139,7 +147,9 @@ class ChatViewModel(
     private fun nextId() = "local-${msgSeq++}"
 
     fun start() {
-        _state.update { it.copy(baseUrl = store.baseUrl, email = store.email.orEmpty()) }
+        _state.update {
+            it.copy(baseUrl = store.baseUrl, email = store.email.orEmpty(), autoDownloadWifi = store.autoDownloadWifi)
+        }
         if (!store.signedIn()) return
         _state.update { it.copy(checkingSession = true) }
         scope.launch { probeAndEnter() }
@@ -279,13 +289,28 @@ class ChatViewModel(
                 }
                 if (newer && r.value.versionCode > store.dismissedUpdateCode) {
                     pendingUpdateCode = r.value.versionCode
-                    _state.update { it.copy(updateVersionName = r.value.versionName) }
+                    _state.update {
+                        it.copy(updateVersionName = r.value.versionName, updateNotes = r.value.notes)
+                    }
+                } else {
+                    _state.update { it.copy(updateNotes = null) }
+                }
+                // Nothing to install anymore → drop stale auto-download artifacts
+                // (never while a flow is mid-flight on that very file).
+                if (!newer && _state.value.updateFlow == null) {
+                    apkFile?.parentFile?.let { UpdateMeta.clear(it) }
                 }
             }
             // Public endpoint on the same host as every other call: a failure
-            // here is connectivity, never "no update". Silent on auto-check.
-            is ApiResult.Err ->
+            // here is connectivity, never "no update" — except the admin kill-
+            // switch (Phase C), which must also take the banner down.
+            is ApiResult.Err -> {
                 if (manual) _state.update { it.copy(updateCheckResult = "error:${r.code}") }
+                if (r.code == "app_updates_disabled") {
+                    pendingUpdateCode = null
+                    _state.update { it.copy(updateVersionName = null, updateNotes = null) }
+                }
+            }
         }
     }
 
@@ -314,9 +339,41 @@ class ChatViewModel(
             publish = { flow -> _state.update { it.copy(updateFlow = flow) } },
             onSuccess = {
                 pendingUpdateCode = null
+                // The installed package makes the cached APK + marker stale.
+                apkFile?.parentFile?.let { UpdateMeta.clear(it) }
                 _state.update { it.copy(updateFlow = null, updateVersionName = null) }
             },
         )
+    }
+
+    /** Settings toggle (issue #34 Phase C): background download over Wi-Fi. */
+    fun setAutoDownloadWifi(enabled: Boolean) {
+        store.autoDownloadWifi = enabled
+        _state.update { it.copy(autoDownloadWifi = enabled) }
+    }
+
+    /**
+     * A periodic-check notification was tapped. `ready` = the auto-download
+     * already left a verified APK on disk → offer it straight to the installer
+     * (when it still matches the marker); otherwise show the dialog and make
+     * sure the banner data is fresh.
+     */
+    fun onUpdateNotification(ready: Boolean) {
+        _state.update { it.copy(openUpdateTick = System.currentTimeMillis()) }
+        val controller = updateController
+        if (ready && apkFile != null && controller != null) {
+            val dir = apkFile.parentFile ?: return
+            val meta = UpdateMeta.read(dir)
+            if (meta != null && meta.versionCode > installedVersionCode) {
+                controller.primeFromVerifiedFile(meta.sha256)
+                return
+            }
+        }
+        if (ready) {
+            startUpdate()
+        } else if (_state.value.updateVersionName == null && _state.value.updateFlow == null) {
+            scope.launch { checkVersion(manual = false) }
+        }
     }
 
     /** Dialog "Update": ask the server to build our update, then follow it. */

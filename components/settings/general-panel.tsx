@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { AppDownloadSettingsCard } from "@/components/app-download";
+import { AppUpdatesCard } from "@/components/settings/app-updates-card";
 import { GeminiImportCard } from "@/components/settings/gemini-import-card";
 import { UserMcpCard } from "@/components/settings/user-mcp-card";
 
@@ -85,6 +86,7 @@ export function GeneralPanel() {
       <ToolsPrefSection />
       <UserMcpCard />
       <AppDownloadSettingsCard />
+      <AppUpdatesCard />
       <GeminiImportCard />
     </div>
   );

@@ -13,7 +13,9 @@ import com.yasha.assist.core.net.SessionAccess
 import com.yasha.assist.core.net.SessionProbe
 import com.yasha.assist.core.net.ThreadDetailDto
 import com.yasha.assist.core.net.ThreadRowDto
+import com.yasha.assist.core.net.UpdateMeta
 import com.yasha.assist.core.net.YashaChatApi
+import com.yasha.assist.core.net.ApkHashing
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -43,6 +45,7 @@ private class FakeStore : SessionAccess {
     override var token: String? = "seeded-token"
     override var email: String? = "user@yasha.test"
     override var dismissedUpdateCode: Int = 0
+    override var autoDownloadWifi: Boolean = false
     var clearCount = 0
     override fun signedIn() = !token.isNullOrEmpty()
     override fun clearSession() { clearCount++; token = null }
@@ -289,5 +292,110 @@ class ChatViewModelSessionTest {
         } finally {
             apk.delete()
         }
+    }
+
+    // Issue #34 (Phase C): notes, kill-switch, Wi-Fi pref, notification entry.
+    @Test
+    fun `banner check carries the release notes`() {
+        val api = FakeChatApi(listOf(SessionProbe.Valid))
+        api.appVersion = ApiResult.Ok(AppVersionDto(9, "9.9.9", notes = "- shiny thing"))
+        val vm = newVm(FakeStore(), api)
+        vm.start()
+        assertEquals("- shiny thing", vm.state.value.updateNotes)
+    }
+
+    @Test
+    fun `the admin kill-switch takes the banner down and names the code`() {
+        val api = FakeChatApi(listOf(SessionProbe.Valid))
+        api.appVersion = ApiResult.Ok(AppVersionDto(versionCode = 9, versionName = "9.9.9"))
+        val vm = newVm(FakeStore(), api)
+        vm.start()
+        assertEquals("9.9.9", vm.state.value.updateVersionName)
+        api.appVersion = ApiResult.Err("app_updates_disabled")
+        vm.checkForUpdates()
+        assertNull(vm.state.value.updateVersionName)
+        assertEquals("error:app_updates_disabled", vm.state.value.updateCheckResult)
+    }
+
+    @Test
+    fun `an up-to-date check clears a stale auto-download artifact`() {
+        val dir = java.nio.file.Files.createTempDirectory("vm-upd").toFile()
+        try {
+            val api = FakeChatApi(listOf(SessionProbe.Valid))
+            api.appVersion = ApiResult.Ok(AppVersionDto(versionCode = 1, versionName = "0.2.9"))
+            java.io.File(dir, UpdateMeta.APK_NAME).writeText("STALE")
+            UpdateMeta.write(dir, UpdateMeta(99, "9.9", "deadbeef"))
+            val vm = ChatViewModel(
+                FakeStore(),
+                api,
+                installedVersionCode = 1,
+                apkFile = java.io.File(dir, UpdateMeta.APK_NAME),
+                recorderFactory = { UnusedRecorder },
+                testScope = scope,
+            )
+            vm.start()
+            assertNull(UpdateMeta.read(dir))
+            assertFalse(java.io.File(dir, UpdateMeta.APK_NAME).exists())
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `the auto-download pref mirrors the store and the state`() {
+        val store = FakeStore()
+        val api = FakeChatApi(listOf(SessionProbe.Valid))
+        val vm = newVm(store, api)
+        vm.start()
+        assertFalse(vm.state.value.autoDownloadWifi)
+        vm.setAutoDownloadWifi(true)
+        assertTrue(store.autoDownloadWifi)
+        assertTrue(vm.state.value.autoDownloadWifi)
+    }
+
+    @Test
+    fun `notification tap primes the verified apk straight to ReadyToInstall`() {
+        val dir = java.nio.file.Files.createTempDirectory("vm-prime").toFile()
+        try {
+            val api = FakeChatApi(listOf(SessionProbe.Valid))
+            val apk = java.io.File(dir, UpdateMeta.APK_NAME)
+            apk.writeText("APKDATA")
+            val sha = ApkHashing.sha256(apk)!!
+            UpdateMeta.write(dir, UpdateMeta(9, "0.9.0", sha.uppercase()))
+            val gateway = object : ApkInstallGateway {
+                override fun hasInstallPermission() = true
+                override fun openPermissionSettings() {}
+                override fun launchInstall(dest: java.io.File, onResult: (InstallOutcome) -> Unit) = true
+            }
+            val vm = ChatViewModel(
+                FakeStore(),
+                api,
+                installedVersionCode = 1,
+                apkGateway = gateway,
+                apkFile = apk,
+                recorderFactory = { UnusedRecorder },
+                reconnectDelay = { tick.receive() },
+                testScope = scope,
+            )
+            vm.start()
+            vm.onUpdateNotification(ready = true)
+            assertTrue(vm.state.value.openUpdateTick > 0L)
+            assertEquals(UpdatePhase.ReadyToInstall, vm.state.value.updateFlow?.phase)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `notification tap opens the updater and tops up a failed banner check`() {
+        val api = FakeChatApi(listOf(SessionProbe.Valid))
+        api.appVersion = ApiResult.Err("network") // auto-check at start finds nothing
+        val vm = newVm(FakeStore(), api)
+        vm.start()
+        assertNull(vm.state.value.updateVersionName)
+        api.appVersion = ApiResult.Ok(AppVersionDto(versionCode = 8, versionName = "8.0.0"))
+        vm.onUpdateNotification(ready = false)
+        assertEquals("8.0.0", vm.state.value.updateVersionName)
+        assertTrue(vm.state.value.openUpdateTick > 0L)
     }
 }

@@ -543,6 +543,22 @@ private fun GeneralTab(vm: SettingsViewModel, state: SettingsUiState, cvm: ChatV
                     color = MaterialTheme.colorScheme.primary,
                 )
             }
+            // Issue #34 Phase C: fetch + verify over Wi-Fi in the background,
+            // then remind the user — the install tap stays in-app.
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = chat.autoDownloadWifi,
+                    onCheckedChange = { cvm.setAutoDownloadWifi(it) },
+                )
+                Column {
+                    Text(stringResource(R.string.update_auto_label), style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        stringResource(R.string.update_auto_sub),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
         }
     }
 }
