@@ -21,7 +21,7 @@ export const dynamic = "force-dynamic";
 // Model ids + instance-wide limits + per-event job configs (JSON values).
 // memory.enabled + memory.events.* rows are written by M1 UI but already typed.
 const STRING_KEYS = ["fast_model", "smart_model"] as const;
-const BOOL_KEYS = ["memory.enabled", "mcp.enabled", "mcp.userServersEnabled", "mcp.userPrivateUrls", "mcp.requireToolApprovals", "auth.allowRegistration"] as const;
+const BOOL_KEYS = ["memory.enabled", "mcp.enabled", "mcp.userServersEnabled", "mcp.userPrivateUrls", "mcp.requireToolApprovals", "auth.allowRegistration", "app_updates.enabled"] as const;
 const EVENT_KEYS = QUEUE_JOB_TYPES.filter((t) => EVENT_SETTING_KEY[t] !== null) as Exclude<
   QueueJobType,
   "debug.echo"

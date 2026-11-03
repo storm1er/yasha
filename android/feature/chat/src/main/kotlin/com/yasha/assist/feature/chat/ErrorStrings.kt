@@ -17,6 +17,7 @@ object ErrorStrings {
         code == "no_vision_model" -> R.string.no_vision_model
         code == "no_cookie" || code == "bad_credentials" || code == "INVALID_EMAIL_OR_PASSWORD" || code == "USER_NOT_FOUND" -> R.string.error_bad_credentials
         code == "network" || code == "upstream_models" || code.startsWith("upstream_status") || code.startsWith("http_") -> R.string.error_network
+        code == "app_updates_disabled" -> R.string.error_updates_disabled
         code.startsWith("upstream") || code == "empty_response" -> R.string.error_upstream
         else -> R.string.error_generic
     }

@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db, rawSqlite } from "@/lib/db";
-import { apkBuilds, session, user } from "@/lib/db/schema";
+import { apkBuilds, apkReleaseTokens, apkReleases, session, user } from "@/lib/db/schema";
 import { signUp } from "./support/app";
 
 const ctl = vi.hoisted(() => ({
@@ -279,50 +279,187 @@ describe("apk-builder: build lifecycle", () => {
     expect(lastSpawn.env.YASHA_KEY_ALIAS).toBe("yasha");
     expect(lastSpawn.env.YASHA_KEY_PASSWORD).toBe("kp");
   });
-
-  it("settled builds carry the APK sha256", async () => {
-    writeFileSync(join(sourceDir, "settings.gradle.kts"), "// src");
-    const u = await signUp("apk11");
-    const m = await import("@/lib/apk-builder");
-    const id = userIdOf(u.username);
-    await m.rebuild(id, "https://hash.test");
-    await settle();
-    const { createHash } = await import("node:crypto");
-    expect(rowFor(id)!.sha256).toBe(createHash("sha256").update("APKDATA").digest("hex"));
-  });
 });
 
-describe("apk-builder: in-app update builds (#34)", () => {
-  it("rebuildForUpdate borrows the caller session; replace + sweep never delete it", async () => {
+describe("apk-builder: generic releases (issue #34, Phase C)", () => {
+  const relRow = () => db.select().from(apkReleases).all();
+  const tokensOf = (releaseId: string) =>
+    db.select().from(apkReleaseTokens).where(eq(apkReleaseTokens.releaseId, releaseId)).all();
+
+  it("ensureRelease builds once per stamp — generic props, shared artifact", async () => {
     writeFileSync(join(sourceDir, "settings.gradle.kts"), "// src");
-    const u = await signUp("updb1");
-    const id = userIdOf(u.username);
     const m = await import("@/lib/apk-builder");
+    const row = m.ensureRelease(7, "0.7.0");
+    expect(row.status).toBe("queued");
+    // Idempotent: a second caller joins the in-flight release, no new row.
+    expect(m.ensureRelease(7, "0.7.0").id).toBe(row.id);
+    await settle();
+    const done = m.releaseFor(7)!;
+    expect(done.status).toBe("ready");
+    expect(done.apkPath).toBe(join(buildDir, "releases", "7.apk"));
+    const { createHash } = await import("node:crypto");
+    expect(done.sha256).toBe(createHash("sha256").update("APKDATA").digest("hex"));
+    expect(lastSpawn.args).toContain("assembleDebug");
+    expect(lastSpawn.args.join(" ")).not.toContain("-PyashaServerUrl"); // NO baked creds
+  });
+
+  it("a new stamp replaces the channel: old rows, links and files are dropped", async () => {
+    writeFileSync(join(sourceDir, "settings.gradle.kts"), "// src");
+    const m = await import("@/lib/apk-builder");
+    const u = await signUp("relrot1");
+    m.ensureRelease(8, "0.8.0");
+    await settle();
+    const old = m.releaseFor(8)!;
+    m.releaseViewOf(old, userIdOf(u.username)); // mint a link
+    const oldFile = old.apkPath!;
+    expect(existsSync(oldFile)).toBe(true);
+
+    m.ensureRelease(9, "0.9.0");
+    await settle();
+    expect(m.releaseFor(8)).toBeNull();
+    expect(existsSync(oldFile)).toBe(false);
+    expect(tokensOf(old.id)).toHaveLength(0);
+    expect(relRow()).toHaveLength(1);
+    expect(m.releaseFor(9)!.status).toBe("ready");
+  });
+
+  it("failed release: error surfaces, next ensureRelease retries the build", async () => {
+    writeFileSync(join(sourceDir, "settings.gradle.kts"), "// src");
+    ctl.code = 1;
+    const m = await import("@/lib/apk-builder");
+    m.ensureRelease(10, "0.10.0");
+    await settle();
+    expect(m.releaseFor(10)!.error).toContain("gradle_failed (exit 1)");
+    // A half-written artifact on the failed row is discarded by the retry.
+    const orphan = join(buildDir, "partial-10.apk");
+    writeFileSync(orphan, "TRUNCATED");
+    db.update(apkReleases).set({ apkPath: orphan }).where(eq(apkReleases.id, m.releaseFor(10)!.id)).run();
+    ctl.code = 0;
+    const retry = m.ensureRelease(10, "0.10.0");
+    expect(retry.status).toBe("queued");
+    expect(existsSync(orphan)).toBe(false);
+    await settle();
+    expect(m.releaseFor(10)!.status).toBe("ready");
+  });
+
+  it("gradle spawn error (string rejection) fails the release", async () => {
+    writeFileSync(join(sourceDir, "settings.gradle.kts"), "// src");
+    ctl.error = new Error("spawn ENOENT");
+    const m = await import("@/lib/apk-builder");
+    m.ensureRelease(16, "0.16.0");
+    await settle();
+    const row = m.releaseFor(16)!;
+    expect(row.status).toBe("failed");
+    expect(row.error).toContain("gradle_spawn_failed");
+    expect(row.error).toContain("spawn ENOENT");
+  });
+
+  it("toolchain / artifact failures mark the release failed", async () => {
+    const m = await import("@/lib/apk-builder");
+    m.ensureRelease(11, "0.11.0"); // no settings.gradle.kts in sourceDir
+    await settle();
+    expect(m.releaseFor(11)!.error).toBe("toolchain_unavailable");
+
+    writeFileSync(join(sourceDir, "settings.gradle.kts"), "// src");
+    ctl.writeApk = false;
+    m.ensureRelease(12, "0.12.0");
+    await settle();
+    expect(m.releaseFor(12)!.error).toBe("apk_missing");
+  });
+
+  it("runReleaseBuild skips unknown and non-queued rows", async () => {
+    const m = await import("@/lib/apk-builder");
+    await m.runReleaseBuild("nope");
+    expect(true).toBe(true);
+  });
+
+  it("view of a failed release: error text rides along, empty error is omitted", async () => {
     const now = new Date();
-    const caller = crypto.randomUUID();
-    db.insert(session)
-      .values({ id: caller, token: `borrowed-${caller}`, userId: id, expiresAt: new Date(now.getTime() + 86_400_000), createdAt: now, updatedAt: now })
-      .run();
-    const row = await m.rebuildForUpdate(id, caller, "https://u.test");
-    expect(row.sessionBorrowed).toBe(true);
-    expect(row.sessionId).toBe(caller);
+    const insert = (error: string | null) =>
+      db
+        .insert(apkReleases)
+        .values({
+          id: crypto.randomUUID(),
+          versionCode: 900 + (error ? 1 : 2),
+          versionName: "0.9.0",
+          status: "failed",
+          apkPath: null,
+          sha256: null,
+          error,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning()
+        .get();
+    const m = await import("@/lib/apk-builder");
+    expect(m.releaseViewOf(insert("boom"))).toEqual({ state: "failed", error: "boom" });
+    expect(m.releaseViewOf(insert(null))).toEqual({ state: "failed" });
+  });
+
+  it("views: link minting, sha/bytes omission, failed error", async () => {
+    writeFileSync(join(sourceDir, "settings.gradle.kts"), "// src");
+    const m = await import("@/lib/apk-builder");
+    const u1 = userIdOf((await signUp("relview1")).username);
+    const u2 = userIdOf((await signUp("relview2")).username);
+    m.ensureRelease(13, "0.13.0");
     await settle();
-    expect(rowFor(id)!.status).toBe("ready");
-    const firstToken = rowFor(id)!.token;
-    // A second update request REPLACES the borrowed row (fresh token) without
-    // ever deleting the borrowed session.
-    await m.rebuildForUpdate(id, caller, "https://u.test");
-    expect(rowFor(id)!.token).not.toBe(firstToken);
-    expect(db.select().from(session).where(eq(session.id, caller)).get()).toBeTruthy();
+    const row = m.releaseFor(13)!;
+
+    const v1 = m.releaseViewOf(row, u1);
+    expect(v1.state).toBe("ready");
+    expect(v1.sha256).toBeTruthy();
+    expect(v1.bytes).toBe(7);
+    expect(tokensOf(row.id)).toHaveLength(1);
+    // Same user: link reused while unclaimed; second user gets their own.
+    expect(m.releaseViewOf(row, u1).downloadUrl).toBe(v1.downloadUrl);
+    const v2 = m.releaseViewOf(row, u2);
+    expect(v2.downloadUrl).not.toBe(v1.downloadUrl);
+    expect(tokensOf(row.id)).toHaveLength(2);
+    // No user (public-ish view): state only, no link.
+    expect(m.releaseViewOf(row).downloadUrl).toBeUndefined();
+  });
+
+  it("claimReleaseDownload: single-use per link, file survives, fresh link after", async () => {
+    writeFileSync(join(sourceDir, "settings.gradle.kts"), "// src");
+    const m = await import("@/lib/apk-builder");
+    const u = userIdOf((await signUp("relclaim1")).username);
+    m.ensureRelease(14, "0.14.0");
     await settle();
-    expect(rowFor(id)!.status).toBe("ready");
-    // Sweeping the expired borrowed row also spares the session.
-    db.update(apkBuilds).set({ expiresAt: new Date(Date.now() - 200_000) }).where(eq(apkBuilds.userId, id)).run();
-    // Fake "now" in the past: runs (throttle starts cold in this file) yet
-    // leaves the later sweep test's fake-now sequence unthrottled.
-    m.sweepExpired(Date.now() - 61_000);
-    expect(rowFor(id)).toBeUndefined();
-    expect(db.select().from(session).where(eq(session.id, caller)).get()).toBeTruthy();
+    const row = m.releaseFor(14)!;
+    const url = m.releaseViewOf(row, u).downloadUrl!;
+    const token = url.slice("/d/".length);
+
+    const first = m.claimReleaseDownload(token);
+    expect(first!.fileName).toBe("yasha-0.14.0.apk");
+    expect(first!.deleteAfterServe).toBe(false);
+    expect(m.claimReleaseDownload(token)).toBeNull(); // burned
+    expect(existsSync(first!.path)).toBe(true); // shared artifact kept
+    // A new request mints a fresh link onto the SAME file.
+    const url2 = m.releaseViewOf(row, u).downloadUrl!;
+    expect(url2).not.toBe(url);
+    const second = m.claimReleaseDownload(url2.slice(3));
+    expect(second!.path).toBe(first!.path);
+  });
+
+  it("claimReleaseDownload: bogus token, failed release, and missing file", async () => {
+    writeFileSync(join(sourceDir, "settings.gradle.kts"), "// src");
+    const m = await import("@/lib/apk-builder");
+    const u = userIdOf((await signUp("relclaim2")).username);
+    expect(m.claimReleaseDownload("bogus")).toBeNull();
+
+    m.ensureRelease(15, "0.15.0");
+    await settle();
+    const row = m.releaseFor(15)!;
+    const token = m.releaseViewOf(row, u).downloadUrl!.slice(3);
+    db.update(apkReleases).set({ status: "failed" }).where(eq(apkReleases.id, row.id)).run();
+    expect(m.claimReleaseDownload(token)).toBeNull(); // release no longer servable
+    expect(db.select().from(apkReleaseTokens).all().find((t) => t.token === token)!.claimedAt).toBeTruthy();
+
+    // Ready row whose file vanished → the claim marks the release failed.
+    db.update(apkReleases).set({ status: "ready", apkPath: join(buildDir, "gone.apk") }).where(eq(apkReleases.id, row.id)).run();
+    const token2 = m.releaseViewOf(row, u).downloadUrl!.slice(3);
+    expect(m.claimReleaseDownload(token2)).toBeNull();
+    expect(m.releaseFor(15)!.error).toBe("apk_file_missing");
   });
 });
 

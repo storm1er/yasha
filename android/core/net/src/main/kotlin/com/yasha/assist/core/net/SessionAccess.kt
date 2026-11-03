@@ -13,6 +13,10 @@ interface SessionAccess {
     // level annoyance control, not account data).
     var dismissedUpdateCode: Int
 
+    // Issue #34 Phase C: build + download + verify updates in the background
+    // while on Wi-Fi, then remind the user to install (one tap in the app).
+    var autoDownloadWifi: Boolean
+
     fun signedIn(): Boolean
 
     fun clearSession()

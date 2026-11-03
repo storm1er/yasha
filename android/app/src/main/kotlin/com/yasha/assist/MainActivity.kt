@@ -19,6 +19,10 @@ class MainActivity : ComponentActivity() {
     private val assistPending = mutableStateOf<Pair<String, List<String>>?>(null)
     private val openThreadTick = mutableLongStateOf(0L)
     private val openThreadId = mutableStateOf<String?>(null)
+    // Update notifications (issue #34 Phase C): tap → open the updater dialog;
+    // the READY flag means a verified APK already sits on disk.
+    private val updateTick = mutableLongStateOf(0L)
+    private val updateReady = mutableStateOf(false)
     // Update channel (issue #34 Phase B): PackageInstaller seam + a handle on
     // the chat VM so ON_RESUME can retry a deferred install / re-check the
     // install permission after the settings round-trip.
@@ -42,6 +46,8 @@ class MainActivity : ComponentActivity() {
             isAppearanceLightNavigationBars = !dark
         }
         consumeAssistExtra(intent)
+        maybeAskNotificationPermission()
+        UpdateScheduler.schedule(this)
         val app = application as YashaApp
         setContent {
             YashaTheme(darkOverride = ThemePrefs.darkOverride()) {
@@ -73,6 +79,9 @@ class MainActivity : ComponentActivity() {
                     threadTick = openThreadTick.longValue,
                     threadProvider = { openThreadId.value },
                     onThreadApplied = { openThreadId.value = null },
+                    updateTick = updateTick.longValue,
+                    updateReadyProvider = { updateReady.value },
+                    onUpdateApplied = { updateReady.value = false },
                 )
             }
         }
@@ -120,10 +129,29 @@ class MainActivity : ComponentActivity() {
             assistPending.value = com.yasha.assist.feature.assist.PendingAskStore.consume()?.let { it.text to it.attachments }
             assistTick.longValue = System.currentTimeMillis()
         }
+        if (intent?.hasExtra(EXTRA_UPDATE) == true) {
+            intent.removeExtra(EXTRA_UPDATE)
+            updateReady.value = intent.getBooleanExtra(EXTRA_UPDATE_READY, false)
+            updateTick.longValue = System.currentTimeMillis()
+        }
+    }
+
+    // Update notifications on 13+ need the runtime grant; ask once, quietly
+    // (denial only costs the reminder channel — everything works in-app).
+    private fun maybeAskNotificationPermission() {
+        if (android.os.Build.VERSION.SDK_INT < 33) return
+        if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
     }
 
     companion object {
         const val EXTRA_ASSIST = "com.yasha.assist.extra.ASSIST"
         const val EXTRA_THREAD = "com.yasha.assist.extra.THREAD"
+        const val EXTRA_UPDATE = "com.yasha.assist.extra.UPDATE"
+        const val EXTRA_UPDATE_READY = "com.yasha.assist.extra.UPDATE_READY"
     }
 }

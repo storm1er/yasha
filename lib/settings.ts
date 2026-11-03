@@ -130,6 +130,15 @@ export function memoryEnabled(): boolean {
   return getSettingBool("memory.enabled", true);
 }
 
+/**
+ * In-app Android update channel (issue #34, Phase C): master switch for
+ * /api/app/version + /api/app-update. Off ⇒ the app shows no banner, runs no
+ * builds and gets `app_updates_disabled` on every update endpoint.
+ */
+export function appUpdatesEnabled(): boolean {
+  return getSettingBool("app_updates.enabled", true);
+}
+
 /** Public account creation — off-switch lives in Settings → Security (admin). */
 export function registrationAllowed(): boolean {
   return getSettingBool("auth.allowRegistration", true);

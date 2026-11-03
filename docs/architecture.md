@@ -75,8 +75,18 @@ the client sends none; client-supplied `tools` pass through.
 
 ### In-container APK builds
 The web image ships a full Android toolchain (`docker/Dockerfile` toolchain/prewarm stages).
-`lib/apk-builder.ts` spawns gradle per request to build a per-user-configured APK
-(`app/d/[token]` one-time download links) — no DinD.
+`lib/apk-builder.ts` spawns gradle on an in-process serial chain (no DinD) for two channels:
+
+- **Per-user builds** (web "Get the app", first install): the APK bakes the public origin +
+  a dedicated session; the `/d/<token>` link is single-use and the file dies after serving
+  (`apkBuilds`).
+- **Generic releases** (in-app updater, issue #34 Phase C): ONE credential-free APK per
+  version stamp (`apk_releases`, unique on `versionCode`), kept on disk and shared by every
+  user; each user gets their own single-use `/d/<token>` (`apkReleaseTokens` — claiming
+  marks the token, never the file). The first `POST /api/app-update` of a stamp triggers the
+  build; a new stamp drops the previous release. `GET /api/app/version` serves the stamp +
+  the `CHANGELOG.md` section for that version (release notes). The whole channel sits behind
+  the admin toggle `app_updates.enabled` and the app's `sha256` check runs before install.
 
 ## Data model (SQLite, drizzle)
 
@@ -90,7 +100,7 @@ The web image ships a full Android toolchain (`docker/Dockerfile` toolchain/prew
 | Queue | `jobs`, `jobCheckpoints` |
 | Memory | `memories`, `threadSummaries` |
 | Imports | `importBatches`, `threadImports` (Gemini takeout) |
-| Misc | `apiKeys`, `apkBuilds` |
+| Misc | `apiKeys`, `apkBuilds` (per-user baked APKs), `apkReleases` + `apkReleaseTokens` (generic update channel) |
 
 Config is **three-layer**: env vars (deployment-level, see
 [configuration.md](configuration.md)) → `settings` table (admin UI, cached ~3 s) →

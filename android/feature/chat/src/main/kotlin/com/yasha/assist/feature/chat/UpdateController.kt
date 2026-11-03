@@ -122,6 +122,27 @@ class UpdateController(
         publish(UpdateFlow(if (started) UpdatePhase.LaunchingInstaller else UpdatePhase.ReadyToInstall))
     }
 
+    /**
+     * Phase C (Wi-Fi auto-download): an UpdateMeta-verified APK already sits
+     * on disk. If its checksum still matches, jump straight to ReadyToInstall
+     * (the Install tap supplies the foreground); anything else falls back to
+     * the ordinary start→build→download flow.
+     */
+    fun primeFromVerifiedFile(expectedSha: String) {
+        job?.cancel()
+        job = null
+        installInFlight = false
+        autoLaunch = false
+        readyToInstall = false
+        val got = if (apkFile.exists()) transport.sha256(apkFile) else null
+        if (got != null && got.equals(expectedSha, ignoreCase = true)) {
+            readyToInstall = true
+            publish(UpdateFlow(UpdatePhase.ReadyToInstall))
+        } else {
+            start()
+        }
+    }
+
     /** Activity resumed: nudge a pending permission or a deferred launch — but
      * never re-open a prompt the user just dismissed, and never double-commit
      * one still awaiting its status. */

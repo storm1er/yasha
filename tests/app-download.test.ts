@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { apkBuilds, session } from "@/lib/db/schema";
+import { apkBuilds, apkReleaseTokens, apkReleases, session } from "@/lib/db/schema";
 import { callRoute, jsonOf, sessionId, signUp } from "./support/app";
 
 const afterCtl = vi.hoisted(() => ({ fns: [] as (() => void)[] }));
@@ -180,5 +180,39 @@ describe("/d/[token]", () => {
     expect(gone.status).toBe(410);
     const row = db.select().from(apkBuilds).where(eq(apkBuilds.token, token)).get()!;
     expect(row.status).toBe("failed");
+  });
+
+  it("release link (issue #34 Phase C): shared APK served without deletion, single-use", async () => {
+    const uid = await sessionId((await signUp("dl6")).cookie);
+    const now = new Date();
+    const apkPath = join(buildDir, "release-21.apk");
+    writeFileSync(apkPath, "RELEASEBYTES");
+    const rel = db
+      .insert(apkReleases)
+      .values({
+        id: crypto.randomUUID(),
+        versionCode: 21,
+        versionName: "0.21.0",
+        status: "ready",
+        apkPath,
+        sha256: "x",
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning()
+      .get();
+    const token = `rel-${crypto.randomUUID()}`;
+    db.insert(apkReleaseTokens)
+      .values({ id: crypto.randomUUID(), releaseId: rel.id, userId: uid, token, createdAt: now })
+      .run();
+
+    const res = await callRoute(downloadGet, { path: `/d/${token}` }, ctx(token));
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("RELEASEBYTES");
+    // Shared artifact: nothing is scheduled for deletion, the file survives.
+    expect(afterCtl.fns).toHaveLength(0);
+    expect(existsSync(apkPath)).toBe(true);
+    const again = await callRoute(downloadGet, { path: `/d/${token}` }, ctx(token));
+    expect(again.status).toBe(410);
   });
 });

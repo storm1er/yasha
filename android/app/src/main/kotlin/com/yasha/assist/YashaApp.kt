@@ -25,5 +25,8 @@ class YashaApp : Application() {
             BuildConfig.YASHA_USERNAME,
         )
         client = YashaClient(sessionStore)
+        // Periodic app-update check (issue #34 Phase C); the worker itself
+        // no-ops while signed out or when the server disables updates.
+        UpdateScheduler.schedule(this)
     }
 }

@@ -82,5 +82,8 @@ dependencies {
     implementation(libs.compose.material3)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
+    // Periodic background update checks (issue #34 Phase C).
+    implementation(libs.androidx.work)
+    testImplementation(libs.junit)
     debugImplementation(libs.compose.ui.tooling)
 }

@@ -6,4 +6,9 @@
     <string name="notif_title">Yasha is ready</string>
     <string name="notif_text">Set Yasha as the default assistant, or use the tile / shortcut.</string>
     <string name="notif_ask">Ask Yasha</string>
+    <string name="update_notif_channel">Updates</string>
+    <string name="update_notif_available_title">Yasha update available</string>
+    <string name="update_notif_available_text">Version %1$s is ready — open Yasha to update.</string>
+    <string name="update_notif_ready_title">Update ready to install</string>
+    <string name="update_notif_ready_text">%1$s has been downloaded and verified. Open Yasha and tap Install.</string>
 </resources>

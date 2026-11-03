@@ -453,22 +453,59 @@ export const apkBuilds = sqliteTable("apk_builds", {
   token: text("token").notNull().unique(),
   // Server base URL baked into the APK (from the request origin at build time).
   serverUrl: text("server_url").notNull(),
-  // better-auth session row baked into the APK: a dedicated row minted at
-  // build time, or — in-app update builds (issue #34) — the caller's own live
-  // session, which cleanup/sweep must never delete (`sessionBorrowed`).
+  // better-auth session row baked into the APK (a dedicated row minted at
+  // build time).
   sessionId: text("session_id").notNull(),
-  sessionBorrowed: integer("session_borrowed", { mode: "boolean" }).notNull().default(false),
   status: text("status").$type<ApkBuildStatus>().notNull().default("queued"),
   apkPath: text("apk_path"),
-  // SHA-256 of the built APK (hex), computed once when the build settles —
-  // the in-app updater verifies the download against it before installing.
-  sha256: text("sha256"),
   error: text("error"),
   createdAt: ts("created_at").notNull(),
   updatedAt: ts("updated_at").notNull(),
   // Download links and abandoned builds are swept past this deadline.
   expiresAt: ts("expires_at").notNull(),
 });
+
+// Generic per-version Android releases (issue #34, Phase C): the in-app update
+// channel. One row per build stamp — no baked credentials (the updater keeps
+// its own session through the package update), shared by every user, kept on
+// disk until the server's version stamp moves. Web downloads (first install)
+// still use the per-user `apk_builds` rows above.
+export const APK_RELEASE_STATUSES = ["queued", "building", "ready", "failed"] as const;
+export type ApkReleaseStatus = (typeof APK_RELEASE_STATUSES)[number];
+
+export const apkReleases = sqliteTable("apk_releases", {
+  id: text("id").primaryKey(),
+  versionCode: integer("version_code").notNull().unique(),
+  versionName: text("version_name").notNull(),
+  status: text("status").$type<ApkReleaseStatus>().notNull().default("queued"),
+  apkPath: text("apk_path"),
+  // SHA-256 of the built APK (hex) — the updater verifies before installing.
+  sha256: text("sha256"),
+  error: text("error"),
+  createdAt: ts("created_at").notNull(),
+  updatedAt: ts("updated_at").notNull(),
+});
+
+// Per-user single-use download links onto a shared release artifact: claiming
+// marks the token, never the file (other users keep downloading it).
+export const apkReleaseTokens = sqliteTable(
+  "apk_release_tokens",
+  {
+    id: text("id").primaryKey(),
+    releaseId: text("release_id")
+      .notNull()
+      .references(() => apkReleases.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    token: text("token").notNull().unique(),
+    createdAt: ts("created_at").notNull(),
+    // No $defaultFn here: NULL means “not claimed yet” (the `ts` helper would
+    // stamp every insert).
+    claimedAt: integer("claimed_at", { mode: "timestamp_ms" }),
+  },
+  (t) => [uniqueIndex("apk_release_tokens_pair").on(t.releaseId, t.userId)],
+);
 
 // Personal prefs only (instance-wide keys stay in `settings`).
 // Today: memory.userEnabled — row absent = follow instance default.
@@ -493,6 +530,7 @@ export type Memory = typeof memories.$inferSelect;
 export type ThreadSummary = typeof threadSummaries.$inferSelect;
 export type JobCheckpoint = typeof jobCheckpoints.$inferSelect;
 export type ApkBuild = typeof apkBuilds.$inferSelect;
+export type ApkRelease = typeof apkReleases.$inferSelect;
 export type McpServer = typeof mcpServers.$inferSelect;
 export type ImportBatch = typeof importBatches.$inferSelect;
 export type ThreadImport = typeof threadImports.$inferSelect;
