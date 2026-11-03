@@ -5,6 +5,11 @@ generated automatically by CI from Conventional Commits landing on `main`
 ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)).
 
+## [0.2.12] - 2026-11-03
+
+### Features
+- **app-update:** In-app self-update install flow (issue #34, Phase B) (f8a9c8c)
+
 ## [0.2.11] - 2026-11-02
 
 ### Features
