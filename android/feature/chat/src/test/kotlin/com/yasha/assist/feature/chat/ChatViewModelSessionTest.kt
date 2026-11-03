@@ -2,6 +2,7 @@ package com.yasha.assist.feature.chat
 
 import com.yasha.assist.core.audio.MicRecorder
 import com.yasha.assist.core.net.ApiResult
+import com.yasha.assist.core.net.AppUpdateDto
 import com.yasha.assist.core.net.AppVersionDto
 import com.yasha.assist.core.net.AttachmentLimitsDto
 import com.yasha.assist.core.net.AudioConfigDto
@@ -66,6 +67,11 @@ private class FakeChatApi(probes: List<SessionProbe>) : YashaChatApi {
     override suspend fun attachmentLimits(): ApiResult<AttachmentLimitsDto> = limits
     var appVersion: ApiResult<AppVersionDto> = ApiResult.Err("not_faked")
     override suspend fun fetchAppVersion(): ApiResult<AppVersionDto> = appVersion
+    override suspend fun fetchAppUpdate(): ApiResult<AppUpdateDto> = ApiResult.Err("not_faked")
+    var appUpdateStart: ApiResult<AppUpdateDto> = ApiResult.Err("not_faked")
+    override suspend fun startAppUpdate(): ApiResult<AppUpdateDto> = appUpdateStart
+    override suspend fun downloadApk(path: String, dest: java.io.File, onFraction: (Float) -> Unit): ApiResult<Unit> =
+        ApiResult.Err("not_faked")
     override suspend fun retryTranscribe(messageId: String): ApiResult<Boolean> = ApiResult.Err("not_faked")
     override fun chatStream(body: ChatRequestBody): Flow<ChatEvent> = emptyFlow()
 }
@@ -236,5 +242,52 @@ class ChatViewModelSessionTest {
         vm.checkForUpdates()
         assertEquals("0.4.0", vm.state.value.updateCheckResult)
         assertEquals("0.4.0", vm.state.value.updateVersionName)
+    }
+
+    // Issue #34 (Phase B): the flow only exists with the installer seams wired.
+    @Test
+    fun `update flow stays inert without an installer gateway`() {
+        val api = FakeChatApi(listOf(SessionProbe.Valid))
+        val vm = newVm(FakeStore(), api)
+        vm.start()
+        vm.startUpdate()
+        vm.launchUpdateInstall()
+        vm.resumeUpdateFlow()
+        vm.cancelUpdate()
+        assertNull(vm.state.value.updateFlow)
+    }
+
+    @Test
+    fun `startUpdate with a gateway runs the flow through the client`() {
+        val api = FakeChatApi(listOf(SessionProbe.Valid))
+        api.appUpdateStart = ApiResult.Err("trusted_origins_unset")
+        val store = FakeStore()
+        val gateway = object : ApkInstallGateway {
+            override fun hasInstallPermission() = true
+            override fun openPermissionSettings() {}
+            override fun launchInstall(dest: java.io.File, onResult: (InstallOutcome) -> Unit) = true
+        }
+        val apk = java.io.File.createTempFile("vm-update", ".apk")
+        try {
+            val vm = ChatViewModel(
+                store,
+                api,
+                apkGateway = gateway,
+                apkFile = apk,
+                recorderFactory = { UnusedRecorder },
+                reconnectDelay = { tick.receive() },
+                testScope = scope,
+            )
+            vm.start()
+            vm.startUpdate()
+            // Unconfined scope: the flow ran to its terminal publish synchronously.
+            assertEquals(UpdatePhase.Failed, vm.state.value.updateFlow?.phase)
+            assertEquals("trusted_origins_unset", vm.state.value.updateFlow?.error)
+            // "Later" clears the flow banner state too.
+            vm.dismissUpdate()
+            assertNull(vm.state.value.updateFlow)
+        } finally {
+            apk.delete()
+        }
     }
 }

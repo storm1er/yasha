@@ -97,6 +97,9 @@ data class ChatUiState(
     val installedVersionCode: Int = 0,
     val updateVersionName: String? = null,
     val updateCheckResult: String? = null,
+    // Phase B: non-null while the in-app update flow runs (build → download →
+    // install); drives the dialog/banner body + buttons.
+    val updateFlow: UpdateFlow? = null,
 
 ) {
     companion object {
@@ -112,6 +115,10 @@ class ChatViewModel(
     // control the comparison; MainActivity passes BuildConfig.
     private val installedVersionCode: Int = 1,
     private val installedVersionName: String = "",
+    // Phase B seams (issue #34): null in JVM tests / Phase-A-only callers —
+    // then the Update dialog keeps the web re-download guidance.
+    private val apkGateway: ApkInstallGateway? = null,
+    private val apkFile: java.io.File? = null,
     private val recorderFactory: (onLevel: (rms: Double) -> Unit) -> MicRecorder =
         { level -> AudioRecorder(levelListener = level) },
     // Reconnect cadence while offline; a fake suspension hook in tests.
@@ -290,7 +297,50 @@ class ChatViewModel(
     fun dismissUpdate() {
         pendingUpdateCode?.let { store.dismissedUpdateCode = it }
         pendingUpdateCode = null
+        updateController?.cancel()
         _state.update { it.copy(updateVersionName = null) }
+    }
+
+    // ---- Update flow (issue #34, Phase B) -----------------------------------
+    // Lazily assembled from the Phase-B seams; null without a gateway (tests).
+    private val updateController: UpdateController? by lazy {
+        val gateway = apkGateway ?: return@lazy null
+        val file = apkFile ?: return@lazy null
+        UpdateController(
+            transport = ClientUpdateTransport(client),
+            installer = gateway,
+            scope = scope,
+            apkFile = file,
+            publish = { flow -> _state.update { it.copy(updateFlow = flow) } },
+            onSuccess = {
+                pendingUpdateCode = null
+                _state.update { it.copy(updateFlow = null, updateVersionName = null) }
+            },
+        )
+    }
+
+    /** Dialog "Update": ask the server to build our update, then follow it. */
+    fun startUpdate() {
+        updateController?.start()
+    }
+
+    /** Dialog "Install" / auto after permission grant / on resume. */
+    fun launchUpdateInstall() {
+        updateController?.launch()
+    }
+
+    /** MainActivity ON_RESUME: re-check the install permission or retry a
+     * commit that had to wait for the app to come back to the foreground. */
+    fun resumeUpdateFlow() {
+        updateController?.onResume()
+    }
+
+    fun openInstallPermissionSettings() {
+        apkGateway?.openPermissionSettings()
+    }
+
+    fun cancelUpdate() {
+        updateController?.cancel()
     }
 
     // ---- Voice input (AUDIO-REFACTO-PLAN §8): VAD auto-stop recording, the
@@ -640,9 +690,11 @@ class ChatViewModel(
         private val client: YashaChatApi,
         private val installedVersionCode: Int = 1,
         private val installedVersionName: String = "",
+        private val apkGateway: ApkInstallGateway? = null,
+        private val apkFile: java.io.File? = null,
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T =
-            ChatViewModel(store, client, installedVersionCode, installedVersionName) as T
+            ChatViewModel(store, client, installedVersionCode, installedVersionName, apkGateway, apkFile) as T
     }
 }

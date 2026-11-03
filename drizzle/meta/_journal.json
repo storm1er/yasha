@@ -113,6 +113,13 @@
       "when": 1793609390512,
       "tag": "0017_next_catseye",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1793657560260,
+      "tag": "0018_material_firebrand",
+      "breakpoints": true
     }
   ]
 }

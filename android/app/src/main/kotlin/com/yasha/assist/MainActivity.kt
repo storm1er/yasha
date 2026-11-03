@@ -19,6 +19,11 @@ class MainActivity : ComponentActivity() {
     private val assistPending = mutableStateOf<Pair<String, List<String>>?>(null)
     private val openThreadTick = mutableLongStateOf(0L)
     private val openThreadId = mutableStateOf<String?>(null)
+    // Update channel (issue #34 Phase B): PackageInstaller seam + a handle on
+    // the chat VM so ON_RESUME can retry a deferred install / re-check the
+    // install permission after the settings round-trip.
+    private val installGateway by lazy { PackageInstallerGateway(applicationContext) }
+    private var chatVm: ChatViewModel? = null
 
     // Account-language override: resources resolve in AppLocale.tag, never
     // the device locale.
@@ -46,8 +51,11 @@ class MainActivity : ComponentActivity() {
                         app.client,
                         installedVersionCode = BuildConfig.VERSION_CODE,
                         installedVersionName = BuildConfig.VERSION_NAME,
+                        apkGateway = installGateway,
+                        apkFile = java.io.File(applicationContext.cacheDir, "update.apk"),
                     ),
                 )
+                chatVm = vm
                 val svm: SettingsViewModel = viewModel(
                     factory = SettingsViewModel.Factory(
                         app.client,
@@ -89,9 +97,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        installGateway.foreground = true
+        chatVm?.resumeUpdateFlow()
         val roleHeld = getSystemService(android.app.role.RoleManager::class.java)
             ?.isRoleHeld(android.app.role.RoleManager.ROLE_ASSISTANT) == true
         AssistNotifier.maybeShowFallback(this, roleHeld)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        installGateway.foreground = false
     }
 
     private fun consumeAssistExtra(intent: Intent?) {
