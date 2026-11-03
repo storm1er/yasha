@@ -2,7 +2,11 @@ name: Release
 
 # Conventional Commits on main drive semver: fix/docs/... → patch, feat → minor,
 # BREAKING CHANGE → major (bitshifted/git-auto-semver). Each push to main
-# computes + creates the next `vX.Y.Z` tag and publishes that image to GHCR.
+# computes the next `vX.Y.Z`, then ONE bot commit carries both the regenerated
+# CHANGELOG.md and the Android version stamp bump (android/app/build.gradle.kts,
+# issue #34 update channel); the tag points at that commit and its image is
+# published to GHCR — so merging an Android change is enough to notify devices,
+# no manual stamp bumps in feature PRs.
 # A tag pushed manually does NOT trigger this workflow (GitHub blocks
 # token-triggered recursion) — merge to main or use the manual dispatch below.
 
@@ -25,7 +29,7 @@ jobs:
   version:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # push the version tag
+      contents: read # compute only; the tag is created by the release job
     outputs:
       version: ${{ steps.semver.outputs.version-string }}
     steps:
@@ -34,7 +38,12 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Compute + create next semver tag
+      # create_tag stays off: the tag must land on the release commit below
+      # (stamp + changelog included), not on the merge commit, so the tagged
+      # tree is self-consistent — the Docker VERSION stamp, the CHANGELOG
+      # section the in-app updater shows, and the gradle file the server
+      # builds the generic APK from all carry the SAME version.
+      - name: Compute next semver
         id: semver
         uses: bitshifted/git-auto-semver@v2
         env:
@@ -42,37 +51,57 @@ jobs:
         with:
           main_branch: main
           initial_version: 0.1.0
-          create_tag: true
+          create_tag: false
           manual_bump: ${{ inputs.manual_bump != 'auto' && inputs.manual_bump || '' }}
 
-  changelog:
+  release:
     needs: version
     if: needs.version.outputs.version != ''
     runs-on: ubuntu-latest
     permissions:
-      contents: write # commit CHANGELOG.md + create the GitHub release
+      contents: write # stamp + CHANGELOG.md commit, version tag, GitHub release
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           fetch-tags: true
 
-      # Regenerate the full CHANGELOG.md from tagged history + open the GitHub
-      # release with the new section as its notes (git-cliff, config: cliff.toml).
-      # No --latest here: it would emit only the newest section and the OUTPUT
-      # redirect would then wipe every older release from the file.
+      # Regenerate the full CHANGELOG.md, labelling the changes since the last
+      # tag with the version about to be cut (the tag does not exist yet —
+      # git-cliff's -t names the otherwise-unreleased section). No --latest
+      # here: it would emit only the newest section and the OUTPUT redirect
+      # would then wipe every older release from the file.
       # OUTPUT is the action's documented way to redirect git-cliff's stdout.
       - name: Generate changelog
         uses: orhun/git-cliff-action@v4
         env:
           OUTPUT: CHANGELOG.md
+        with:
+          args: --tag "v${{ needs.version.outputs.version }}"
 
-      - name: Write notes for the release + commit changelog
+      - name: Bump stamp, commit, tag, publish GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -eu
+          # Android update stamp (issue #34): android/app/build.gradle.kts is
+          # the SOLE source — the Dockerfile derives the runtime VERSION file
+          # from it and the server builds the generic APK from the same tree.
+          # versionCode derives from the tag (major·10⁶ + minor·10³ + patch),
+          # so it is monotonic with releases; versionName = tag, so the release
+          # notes parser always matches this release's [VERSION] section.
+          CODE=$(echo "${VERSION}" | awk -F. '{ print $1*1000000 + $2*1000 + $3 }')
+          if [ "${CODE}" -gt 2147483647 ]; then
+            echo "versionCode overflow (major too large)"; exit 1
+          fi
+          sed -i -E \
+            -e "s/^([[:space:]]*versionCode = )[0-9]+/\1${CODE}/" \
+            -e "s/^([[:space:]]*versionName = \")[^\"]+/\1${VERSION}/" \
+            android/app/build.gradle.kts
+          grep -q "versionCode = ${CODE}" android/app/build.gradle.kts
+          grep -q "versionName = \"${VERSION}\"" android/app/build.gradle.kts
+
           # Notes = this version's section of the regenerated CHANGELOG.md
           awk -v v="${VERSION}" '
             index($0, "## [" v "]") == 1 { p = 1; print; next }
@@ -85,21 +114,23 @@ jobs:
             echo "_No notable changes in this release (documentation/maintenance only)._" \
               > "release-notes-v${VERSION}.md"
           fi
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet -- CHANGELOG.md; then
-            echo "CHANGELOG.md unchanged; skipping commit"
-          else
-            git add CHANGELOG.md
-            git commit -m "docs: changelog for v${VERSION} [skip ci]"
-            git push
-          fi
+          git add CHANGELOG.md android/app/build.gradle.kts
+          # A rerun after a mid-job failure may find everything already bumped.
+          git diff --cached --quiet || git commit -m "chore(release): v${VERSION} [skip ci]"
+          # Concurrent push to main ⇒ fails fast (non-fast-forward); the next
+          # push to main recomputes the same version and retries cleanly.
+          git push origin "HEAD:main"
+          git tag "v${VERSION}"
+          git push origin "v${VERSION}"
           gh release create "v${VERSION}" \
             --title "v${VERSION}" \
             --notes-file "release-notes-v${VERSION}.md"
 
   publish:
-    needs: version
+    needs: [version, release]
     if: needs.version.outputs.version != ''
     runs-on: ubuntu-latest
     permissions:
@@ -109,7 +140,11 @@ jobs:
       REGISTRY: ghcr.io
       IMAGE: ${{ github.repository }}
     steps:
+      # Checkout the TAG, not the event ref: the image must be built from the
+      # tree that carries this release's stamp + changelog section.
       - uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.version.outputs.version }}
 
       - uses: docker/setup-buildx-action@v3
 
