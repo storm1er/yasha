@@ -61,8 +61,15 @@ jobs:
     permissions:
       contents: write # stamp + CHANGELOG.md commit, version tag, GitHub release
     steps:
+      # main is ruleset-protected (PRs only; GitHub Free only enforces this
+      # since the repo went public). The GITHUB_TOKEN cannot bypass a repo
+      # ruleset, so checkout over SSH authenticates the release pushes below
+      # with a write deploy key (repo secret RELEASE_DEPLOY_KEY; the key is
+      # also the ruleset's DeployKey bypass actor). checkout leaves SSH set up
+      # for the later steps of this job.
       - uses: actions/checkout@v4
         with:
+          ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
           fetch-depth: 0
           fetch-tags: true
 
@@ -83,16 +90,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.version.outputs.version }}
-          # main is ruleset-protected (PRs only); GITHUB_TOKEN cannot bypass
-          # that, so the stamp commit + tag push below authenticates with a
-          # dedicated fine-grained PAT (repo secret RELEASE_TOKEN, granted
-          # Contents:RW on this repo only). A fine-grained PAT push also does
-          # not re-trigger workflows, replacing the [skip ci] safety net.
-          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           set -eu
-          if [ -z "${RELEASE_TOKEN:-}" ]; then
-            echo "::error::Missing repo secret RELEASE_TOKEN (fine-grained PAT, Contents:RW on this repo) — needed to push the release commit to protected main."
+          # Fail fast with a clear message if the deploy-key checkout was
+          # skipped (secret missing → origin stays HTTPS, push would 403).
+          if ! git remote get-url origin | grep -qE '^(git@github\.com:|ssh://git@github\.com/)'; then
+            echo "::error::origin is not SSH — set the repo secret RELEASE_DEPLOY_KEY (private half of the write deploy key whose ruleset bypass lets release commits reach protected main)."
             exit 1
           fi
           # Android update stamp (issue #34): android/app/build.gradle.kts is
@@ -132,12 +135,10 @@ jobs:
           git diff --cached --quiet || git commit -m "chore(release): v${VERSION} [skip ci]"
           # Concurrent push to main ⇒ fails fast (non-fast-forward); the next
           # push to main recomputes the same version and retries cleanly.
-          # Branch + tag go up in ONE atomic PAT-authenticated push so a tag
-          # can never exist without its stamp commit. The credentials live in
-          # the URL; Actions masks the secret, git never echoes it back.
+          # Branch + tag go up in ONE atomic push so a tag can never exist
+          # without its stamp commit.
           git tag "v${VERSION}"
-          git push "https://x-access-token:${RELEASE_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
-            "HEAD:main" "refs/tags/v${VERSION}"
+          git push origin "HEAD:main" "refs/tags/v${VERSION}"
           gh release create "v${VERSION}" \
             --title "v${VERSION}" \
             --notes-file "release-notes-v${VERSION}.md"
