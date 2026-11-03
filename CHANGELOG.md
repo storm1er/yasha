@@ -5,6 +5,11 @@ generated automatically by CI from Conventional Commits landing on `main`
 ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)).
 
+## [0.2.15] - 2026-11-03
+
+### Bug Fixes
+- **chat:** Reflow render_ui card grids on phones instead of squeezing them (13631d8)
+
 ## [0.2.13] - 2026-11-03
 
 ### Features
