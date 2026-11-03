@@ -83,8 +83,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.version.outputs.version }}
+          # main is ruleset-protected (PRs only); GITHUB_TOKEN cannot bypass
+          # that, so the stamp commit + tag push below authenticates with a
+          # dedicated fine-grained PAT (repo secret RELEASE_TOKEN, granted
+          # Contents:RW on this repo only). A fine-grained PAT push also does
+          # not re-trigger workflows, replacing the [skip ci] safety net.
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           set -eu
+          if [ -z "${RELEASE_TOKEN:-}" ]; then
+            echo "::error::Missing repo secret RELEASE_TOKEN (fine-grained PAT, Contents:RW on this repo) — needed to push the release commit to protected main."
+            exit 1
+          fi
           # Android update stamp (issue #34): android/app/build.gradle.kts is
           # the SOLE source — the Dockerfile derives the runtime VERSION file
           # from it and the server builds the generic APK from the same tree.
@@ -122,9 +132,12 @@ jobs:
           git diff --cached --quiet || git commit -m "chore(release): v${VERSION} [skip ci]"
           # Concurrent push to main ⇒ fails fast (non-fast-forward); the next
           # push to main recomputes the same version and retries cleanly.
-          git push origin "HEAD:main"
+          # Branch + tag go up in ONE atomic PAT-authenticated push so a tag
+          # can never exist without its stamp commit. The credentials live in
+          # the URL; Actions masks the secret, git never echoes it back.
           git tag "v${VERSION}"
-          git push origin "v${VERSION}"
+          git push "https://x-access-token:${RELEASE_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "HEAD:main" "refs/tags/v${VERSION}"
           gh release create "v${VERSION}" \
             --title "v${VERSION}" \
             --notes-file "release-notes-v${VERSION}.md"
