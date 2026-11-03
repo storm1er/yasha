@@ -11,7 +11,7 @@ import { useState } from "react";
 import { useTranslations } from "next-intl";
 import dynamic from "next/dynamic";
 import { ChevronLeft, ChevronRight, Minus, TrendingDown, TrendingUp } from "lucide-react";
-import type { GenUiNode, RenderedCard, GenUiSlide } from "@/lib/chat/render-ui";
+import type { GenUiGrid, GenUiNode, RenderedCard, GenUiSlide } from "@/lib/chat/render-ui";
 
 // recharts stays out of the server render (canvas-free but measurement-based).
 const ChartView = dynamic(() => import("@/components/chat/gen-ui-chart"), { ssr: false });
@@ -23,6 +23,28 @@ const TONES: Record<string, string> = {
   warning: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
   danger: "bg-red-500/15 text-red-600 dark:text-red-400",
 };
+
+// Grid responsiveness (render_ui on phones): the model declares `cols` for a
+// desktop canvas; narrow surfaces must REFLOW, not squeeze. A grid cell below
+// ~260px is unreadable once it holds a table/chart/nested card, so those
+// children ("heavy") stack until the card is wide enough for their columns;
+// light children (metrics, badges, text…) survive two-up on a phone. Mirrors
+// GenUiView.kt on Android (260 CSS px ≈ 260dp cell floor).
+const HEAVY_TYPES = new Set<GenUiNode["type"]>(["table", "chart", "card", "slides"]);
+const isHeavy = (n: GenUiNode) => HEAVY_TYPES.has(n.type);
+
+/** Column CSS per (cols, content weight), phone-first:
+ *  - heavy grid: 1 column until `sm` (≥640px viewport), then the AI's cols;
+ *  - light grid: 1 column <320px, 2 from 320px..`sm` (a phone fits two
+ *    ~150px metrics, never four), then the AI's cols.
+ *  Desktop (≥sm) always honors the AI's intent, so wide output never changes.
+ *  Static strings only — Tailwind must see every variant in the source. */
+function gridColsClass(grid: GenUiGrid): string {
+  if ((grid.cols ?? 2) <= 1) return "grid-cols-1";
+  const wide = "sm:grid-cols-[repeat(var(--cols),minmax(0,1fr))]";
+  if (grid.children.some(isHeavy)) return `grid-cols-1 ${wide}`;
+  return `grid-cols-1 min-[320px]:grid-cols-[repeat(2,minmax(0,1fr))] ${wide}`;
+}
 
 function SlideView({ slide }: { slide: GenUiSlide }) {
   return (
@@ -184,7 +206,7 @@ function NodeView({ node }: { node: GenUiNode }) {
     case "grid":
       return (
         <div
-          className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-[repeat(var(--cols),minmax(0,1fr))]"
+          className={`grid min-w-0 gap-2 ${gridColsClass(node)}`}
           style={{ "--cols": node.cols ?? 2 } as React.CSSProperties}
         >
           {node.children.map((c, i) => (
