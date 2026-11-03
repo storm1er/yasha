@@ -5,6 +5,11 @@ generated automatically by CI from Conventional Commits landing on `main`
 ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)).
 
+## [0.2.13] - 2026-11-03
+
+### Features
+- **app-update:** Generic releases, background checks, admin toggle (#34 Phase C) (27d0f49)
+
 ## [0.2.12] - 2026-11-03
 
 ### Features
