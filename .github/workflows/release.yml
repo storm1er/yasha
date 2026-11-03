@@ -133,12 +133,27 @@ jobs:
           git add CHANGELOG.md android/app/build.gradle.kts
           # A rerun after a mid-job failure may find everything already bumped.
           git diff --cached --quiet || git commit -m "chore(release): v${VERSION} [skip ci]"
-          # Concurrent push to main ⇒ fails fast (non-fast-forward); the next
-          # push to main recomputes the same version and retries cleanly.
-          # Branch + tag go up in ONE atomic push so a tag can never exist
-          # without its stamp commit.
-          git tag "v${VERSION}"
-          git push origin "HEAD:main" "refs/tags/v${VERSION}"
+          # main keeps moving under this job (Dependabot PRs auto-merge while
+          # the changelog is being generated), so land the stamp commit with
+          # rebase-and-retry. The push is ATOMIC: branch + tag both land or
+          # neither does — a tag can never dangle off a rejected commit.
+          # The tag is (re)pointed at HEAD on every attempt, so it always
+          # names exactly the commit that lands on main.
+          attempt=0
+          while :; do
+            attempt=$((attempt + 1))
+            git tag -f "v${VERSION}" >/dev/null
+            if git push --atomic origin "HEAD:main" "refs/tags/v${VERSION}"; then
+              break
+            fi
+            if [ "${attempt}" -ge 5 ]; then
+              echo "::error::could not land v${VERSION} after ${attempt} attempts (main too busy)"
+              exit 1
+            fi
+            sleep "$((attempt * 3))"
+            git fetch -q origin main
+            git rebase -q origin/main
+          done
           gh release create "v${VERSION}" \
             --title "v${VERSION}" \
             --notes-file "release-notes-v${VERSION}.md"
