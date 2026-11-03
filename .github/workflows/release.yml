@@ -61,8 +61,15 @@ jobs:
     permissions:
       contents: write # stamp + CHANGELOG.md commit, version tag, GitHub release
     steps:
+      # main is ruleset-protected (PRs only; GitHub Free only enforces this
+      # since the repo went public). The GITHUB_TOKEN cannot bypass a repo
+      # ruleset, so checkout over SSH authenticates the release pushes below
+      # with a write deploy key (repo secret RELEASE_DEPLOY_KEY; the key is
+      # also the ruleset's DeployKey bypass actor). checkout leaves SSH set up
+      # for the later steps of this job.
       - uses: actions/checkout@v4
         with:
+          ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
           fetch-depth: 0
           fetch-tags: true
 
@@ -85,6 +92,12 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -eu
+          # Fail fast with a clear message if the deploy-key checkout was
+          # skipped (secret missing → origin stays HTTPS, push would 403).
+          if ! git remote get-url origin | grep -qE '^(git@github\.com:|ssh://git@github\.com/)'; then
+            echo "::error::origin is not SSH — set the repo secret RELEASE_DEPLOY_KEY (private half of the write deploy key whose ruleset bypass lets release commits reach protected main)."
+            exit 1
+          fi
           # Android update stamp (issue #34): android/app/build.gradle.kts is
           # the SOLE source — the Dockerfile derives the runtime VERSION file
           # from it and the server builds the generic APK from the same tree.
@@ -122,9 +135,10 @@ jobs:
           git diff --cached --quiet || git commit -m "chore(release): v${VERSION} [skip ci]"
           # Concurrent push to main ⇒ fails fast (non-fast-forward); the next
           # push to main recomputes the same version and retries cleanly.
-          git push origin "HEAD:main"
+          # Branch + tag go up in ONE atomic push so a tag can never exist
+          # without its stamp commit.
           git tag "v${VERSION}"
-          git push origin "v${VERSION}"
+          git push origin "HEAD:main" "refs/tags/v${VERSION}"
           gh release create "v${VERSION}" \
             --title "v${VERSION}" \
             --notes-file "release-notes-v${VERSION}.md"
