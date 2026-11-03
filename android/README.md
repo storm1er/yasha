@@ -51,11 +51,16 @@ and wire them into a `signingConfig` in `app/build.gradle.kts` when M7 packaging
 
 ## Versioning (issue #34)
 
-`app/build.gradle.kts` carries the version stamp. On **every app-visible release** bump
-`versionCode` (monotonic integer) and set `versionName` to the release git tag
-(`v0.2.9` → `"0.2.9"`) — the app compares `versionCode` against the server's
-`GET /api/app/version`, which reads the stamp from the APK source tree (Docker `VERSION`
-file, gradle-file fallback in dev). `versionName` follows **git tags**, not `package.json`.
+`app/build.gradle.kts` carries the version stamp — **do not bump it by hand**:
+the **Release workflow** auto-commits it on every merge to main (`chore(release):
+vX.Y.Z [skip ci]`): `versionName` becomes the computed semver tag (minus the `v`)
+and `versionCode` is derived from it as `major·10⁶ + minor·10³ + patch` — monotonic
+with releases. The tag points at that commit, so the Docker `VERSION` stamp, the
+CHANGELOG section the in-app updater renders, and the gradle file the server builds
+the generic APK from all carry the **same** version. The app compares `versionCode`
+against the server's `GET /api/app/version` (Docker `VERSION` file, gradle-file
+fallback in dev). Values committed in the tree are simply the state of the last
+release (pre-automation history: 0.2.9 / code 2).
 
 ## In-app updates (issue #34, Phases B + C)
 

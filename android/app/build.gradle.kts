@@ -25,8 +25,8 @@ android {
         applicationId = "com.yasha.assist"
         minSdk = 30
         targetSdk = 35
-        versionCode = 2 // bump on every app-visible release (android/README.md §Versioning)
-        versionName = "0.2.9" // follows git tags (CHANGELOG/cliff.toml), not package.json
+        versionCode = 2 // CI-owned: Release workflow commits major·10⁶+minor·10³+patch per tag (android/README.md §Versioning)
+        versionName = "0.2.9" // CI-owned: Release workflow sets it to the release tag; value here = dev default
         buildConfigField("String", "YASHA_SERVER_URL", bakedProp("yashaServerUrl", ".-:/"))
         buildConfigField("String", "YASHA_SESSION_TOKEN", bakedProp("yashaSessionToken", "-_./+="))
         buildConfigField("String", "YASHA_USERNAME", bakedProp("yashaUsername", "._-"))
