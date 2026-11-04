@@ -340,8 +340,21 @@ export function ChatSurface({ initialThreadId }: { initialThreadId: string | nul
 
   // The picker reports its effective value on init (thread model > stored >
   // default) and on every change, so this ref always mirrors what is shown.
+  // On a NEW chat every report doubles as the warmup trigger (issue #67):
+  // the effective model is now known, so fire the discarded warm completion
+  // (model load + memory-prefix prefill) before the first message is typed.
+  // Fire-and-forget — the endpoint is session-gated and dedupes server-side.
   const handleModelChange = useCallback((id: string) => {
     selectedModelRef.current = id;
+    if (threadIdRef.current === null) {
+      void fetch("/api/backend/warm", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: id }),
+      }).catch(() => {
+        /* warmup is best-effort */
+      });
+    }
   }, []);
 
   // Protocol v3 transport (docs/protocol-v3.md): the stock useChat body —
