@@ -2,7 +2,7 @@
 // DECLARATIVE component tree (charts, metrics, tables, slides…) instead of
 // arbitrary code. Display-only: with `execute`, so the SDK loop dispatches it
 // like an MCP tool — validate → `data-card` chunk + `meta.cards` record →
-// return "displayed" and the same turn continues. No user answer involved:
+// return "[card displayed]" and the same turn continues. No user answer involved:
 // no pending gate, no resume (that is the interactive tier, interactive.ts).
 // Invalid input is fed back to the model as the tool result so it can
 // self-correct; the client NEVER sees a partially-valid tree.
@@ -247,7 +247,7 @@ export function buildRenderUiTool(h: { onCard: (root: GenUiNode | GenUiNode[]) =
   return {
     [RENDER_UI_TOOL]: tool({
       description:
-        "Show the user a visual card built from simple components (grid, metric, chart bar|line|area|donut, table, list, text, slides, badge, progress). The card renders inline in the chat; reply with `displayed` — do NOT repeat the card's content as text. Use it for anything a plain-text answer would render worse: numbers over time, comparisons, dashboards, step decks.",
+        "Show the user a visual card built from simple components (grid, metric, chart bar|line|area|donut, table, list, text, slides, badge, progress). The card renders inline in the chat — do NOT repeat the card's content as text and do NOT acknowledge the card with any word of your own; after the tool result, continue with only what the card does not already say. Use it for anything a plain-text answer would render worse: numbers over time, comparisons, dashboards, step decks.",
       inputSchema: jsonSchema({
         type: "object",
         properties: {
