@@ -131,6 +131,16 @@ export function memoryEnabled(): boolean {
 }
 
 /**
+ * LLM warmup (issue #67): admin switch for the new-chat warm call
+ * (`POST /api/backend/warm`, lib/chat/warm.ts). Off ⇒ the endpoint answers
+ * {scheduled:false, reason:"disabled"} and no upstream call is made — for
+ * instances whose GPU time must stay reserved.
+ */
+export function warmEnabled(): boolean {
+  return getSettingBool("backend.warm.enabled", true);
+}
+
+/**
  * In-app Android update channel (issue #34, Phase C): master switch for
  * /api/app/version + /api/app-update. Off ⇒ the app shows no banner, runs no
  * builds and gets `app_updates_disabled` on every update endpoint.

@@ -73,6 +73,21 @@ How Yasha works internally. Product-level description lives in the [README](../R
 (`Authorization: Bearer`, hashed at rest, `lib/api-keys.ts`). Server tools are injected only when
 the client sends none; client-supplied `tools` pass through.
 
+### Backend warmup (issue #67)
+`POST /api/backend/warm` (session, heavy rate tier) fires a **discarded** completion carrying the
+exact prefix a user's first real message will produce — the memory-injected system block plus the
+identical tool declarations (llama.cpp renders tools ahead of messages, so they are part of the
+KV-cacheable prefix). One call therefore triggers the provider's synchronous model load off the
+user's critical path and pre-prefills the system block, so the real first turn only pays for its
+own user turn (`lib/chat/warm.ts`). The trigger is client side — the web surface warms when the
+model picker settles the effective pick of a NEW chat (Android: follow-up). Best-effort by design:
+skips when the user is generating, while another warm is in flight, or the same prefix was warmed
+within 60 s (prefix-hash dedupe, FIFO-bounded map); the response never waits for the upstream call.
+An admin toggle (`backend.warm.enabled`, Settings → Backend, on by default) turns the feature off
+instance-wide.
+New-thread prefixes only — opening an existing thread adds summary + history (the model-load part
+still benefits via the shared tools prefix).
+
 ### In-container APK builds
 The web image ships a full Android toolchain (`docker/Dockerfile` toolchain/prewarm stages).
 `lib/apk-builder.ts` spawns gradle on an in-process serial chain (no DinD) for two channels:
