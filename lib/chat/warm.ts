@@ -24,7 +24,7 @@ import { buildRenderUiTool } from "@/lib/chat/render-ui";
 import { toModelMessages } from "@/lib/chat/model-messages";
 import type { ChatUpstreamMessage } from "@/lib/mcp/loop";
 import { buildToolset, type OpenAiToolSpec } from "@/lib/mcp/bridge";
-import { mcpEnabled, fastModel, memoryEnabled, smartModel } from "@/lib/settings";
+import { mcpEnabled, fastModel, memoryEnabled, smartModel, warmEnabled } from "@/lib/settings";
 import { getUserMcpEnabled } from "@/lib/mcp/prefs";
 import { getUserMemoryEnabled } from "@/lib/memory/prefs";
 import { buildMemoryContext } from "@/lib/memory/recall";
@@ -50,6 +50,7 @@ export const WARM_ABORT_AFTER_MS = 120_000;
 
 export type WarmReason =
   | "ok"
+  | "disabled"
   | "no_backend"
   | "no_model"
   | "invalid_model"
@@ -98,6 +99,8 @@ export async function warmUser(opts: {
   interactive?: boolean;
   cards?: boolean;
 }): Promise<WarmOutcome> {
+  // Admin kill-switch (Settings → Backend): nothing upstream happens at all.
+  if (!warmEnabled()) return skip("disabled");
   if (inFlight) return skip("warm_in_flight");
   const providers = chatProviders();
   if (providers.length === 0) return skip("no_backend");

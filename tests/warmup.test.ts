@@ -180,6 +180,16 @@ describe("POST /api/backend/warm — validation + soft states", () => {
     releaseGeneration(user.userId);
   });
 
+  it("admin kill-switch (backend.warm.enabled) gates everything", async () => {
+    mock.route(CHAT, () => sseChatCompletion("x"));
+    setSetting("backend.warm.enabled", "false");
+    expect(await warmJson({})).toEqual({ scheduled: false, reason: "disabled" });
+    expect(mock.calls.some((c) => c.url.includes(CHAT))).toBe(false); // nothing upstream
+    setSetting("backend.warm.enabled", "true");
+    expect(await warmJson({})).toEqual({ scheduled: true, reason: "ok" });
+    await waitForWarmRelease();
+  });
+
   it("client-chosen model is validated against the synced catalog", async () => {
     mock.route(MODELS, () => modelsResponse([{ id: "fast-model.test" }]));
     expect(await warmJson({ model: "default:ghost" })).toEqual({

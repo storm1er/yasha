@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ModelOptionsDialog } from "@/components/settings/model-options-dialog";
 import { ChatLimitsCard } from "@/components/settings/chat-limits-card";
+import { WarmupCard } from "@/components/settings/warmup-card";
 import { McpCard } from "@/components/settings/mcp-card";
 import { fetchModelOptions, ModelSelect, type ModelOption } from "@/components/settings/model-select";
 import { CatalogCard, ProvidersCard, apiJson, type ProviderRow } from "@/components/settings/providers-card";
@@ -1401,6 +1402,7 @@ export function AdminPanel() {
       {selected && <CatalogCard providerId={selected.id} />}
       {selected?.type === "lemonade" && <LemonadeConsole key={selected.id} providerId={selected.id} />}
       <ChatModelsCard />
+      <WarmupCard />
       <ChatLimitsCard />
       <McpCard />
     </div>

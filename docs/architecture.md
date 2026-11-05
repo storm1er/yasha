@@ -83,6 +83,8 @@ own user turn (`lib/chat/warm.ts`). The trigger is client side — the web surfa
 model picker settles the effective pick of a NEW chat (Android: follow-up). Best-effort by design:
 skips when the user is generating, while another warm is in flight, or the same prefix was warmed
 within 60 s (prefix-hash dedupe, FIFO-bounded map); the response never waits for the upstream call.
+An admin toggle (`backend.warm.enabled`, Settings → Backend, on by default) turns the feature off
+instance-wide.
 New-thread prefixes only — opening an existing thread adds summary + history (the model-load part
 still benefits via the shared tools prefix).
 
