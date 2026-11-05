@@ -237,6 +237,14 @@ describe("buildRenderUiTool", () => {
     expect(shown).toHaveLength(1);
   });
 
+  // Issue #64: the old wording ("reply with `displayed`") was read as an
+  // instruction, so the model echoed the word as plain text after the card.
+  it("description never asks the model to reply with a receipt word", () => {
+    const description = buildRenderUiTool({ onCard: () => {} }).render_ui.description ?? "";
+    expect(description).not.toMatch(/reply with/i);
+    expect(description).toContain("do NOT repeat the card's content as text");
+  });
+
   it(`caps at ${CARD_BUDGET} cards per turn`, async () => {
     let n = 0;
     const exec = execOf(() => (n += 1));
