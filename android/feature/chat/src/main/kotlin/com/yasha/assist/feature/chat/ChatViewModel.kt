@@ -163,7 +163,10 @@ class ChatViewModel(
         when (client.probeSession()) {
             SessionProbe.Valid -> {
                 _state.update { it.copy(checkingSession = false, signedIn = true, offline = false, error = null) }
-                refresh()
+                // App-open warm (issue #69): the Android mirror of the web
+                // model-picker trigger — fires once the effective model is
+                // known (see refresh(warm = true)).
+                refresh(warm = true)
             }
             SessionProbe.Invalid -> {
                 store.clearSession()
@@ -236,10 +239,19 @@ class ChatViewModel(
 
     fun dismissError() = _state.update { it.copy(error = null) }
 
-    fun refresh() {
+    /**
+     * Re-pull models/threads/audio/limits (and update stamp).
+     * `warm` (issue #69): after the model fetch, fire the one-shot backend
+     * warm carrying the effective default id — on its own coroutine so no
+     * thread-list/audio request is delayed by the extra round-trip.
+     */
+    fun refresh(warm: Boolean = false) {
         scope.launch {
             when (val r = client.fetchModels()) {
-                is ApiResult.Ok -> _state.update { it.copy(models = r.value.models, defaultModel = r.value.default, noVision = r.value.noVision) }
+                is ApiResult.Ok -> {
+                    _state.update { it.copy(models = r.value.models, defaultModel = r.value.default, noVision = r.value.noVision) }
+                    if (warm) scope.launch { client.warmBackend(r.value.default) }
+                }
                 is ApiResult.Err -> _state.update { it.copy(error = r.code) }
             }
             when (val r = client.listThreads()) {

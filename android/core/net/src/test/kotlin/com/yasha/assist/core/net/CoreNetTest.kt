@@ -185,7 +185,25 @@ class EndpointsTest {
         assertEquals("https://example.com/api/chat/messages/m1/transcribe", e.messageTranscribe("m1"))
         assertEquals("https://example.com/api/app/version", e.appVersion)
         assertEquals("https://example.com/api/app-update", e.appUpdate)
+        assertEquals("https://example.com/api/backend/warm", e.backendWarm)
         assertEquals(1568, YashaEndpoints.ATTACHMENT_MAX_SIDE)
+    }
+}
+
+// Issue #69: the warmed prefix only matches the real first send if the body
+// mirrors the app's flags (interactive=false + cards=true) — pin the shape.
+class WarmRequestBodyTest {
+    @Test
+    fun `carries the app surface flags and the optional model`() {
+        val withModel = warmRequestBody("lemonade:gemma")
+        assertTrue(withModel.contains("\"model\":\"lemonade:gemma\""))
+        assertTrue(withModel.contains("\"interactive\":false"))
+        assertTrue(withModel.contains("\"cards\":true"))
+        // Floaty path: no catalog loaded — omit the key, server resolves.
+        val noModel = warmRequestBody(null)
+        assertFalse(noModel.contains("\"model\""))
+        assertTrue(noModel.contains("\"interactive\":false"))
+        assertTrue(noModel.contains("\"cards\":true"))
     }
 }
 

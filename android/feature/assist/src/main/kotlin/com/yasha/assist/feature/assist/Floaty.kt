@@ -229,6 +229,12 @@ fun FloatyScreen(onDismiss: () -> Unit) {
         }
     }
 
+    // Issue #69: the assistant intent — opening the floaty is the strongest
+    // "about to ask" signal. Fire-and-forget warm with the model omitted (the
+    // catalog isn't loaded here; the server resolves fast → smart). The
+    // server's 60 s prefix-hash dedupe collapses it with the app-open warm.
+    LaunchedEffect(Unit) { client.warmBackend(null) }
+
     LaunchedEffect(Unit) {
         when (val r = client.audioConfig()) {
             is ApiResult.Ok -> recorder.setEnabled(r.value.enabled)
