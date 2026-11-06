@@ -17,6 +17,9 @@
     <string name="floaty_open_yasha">Ouvrir dans Yasha</string>
     <string name="floaty_new_question">Nouvelle question</string>
     <string name="floaty_ask_failed">Une erreur est survenue. Réessayez.</string>
+    <string name="floaty_ask_failed_network">Serveur injoignable — vérifiez votre connexion et réessayez.</string>
+    <string name="floaty_ask_failed_unauthorized">Session expirée — reconnectez-vous dans Yasha.</string>
+    <string name="floaty_offline">Serveur injoignable. La saisie vocale est en pause jusqu\'au retour de la connexion.</string>
     <string name="floaty_attach_image">Ajouter une photo</string>
     <string name="floaty_picked_image">Photo jointe</string>
     <string name="floaty_remove_image">Retirer l\'image</string>
