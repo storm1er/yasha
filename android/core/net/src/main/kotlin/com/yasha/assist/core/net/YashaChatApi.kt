@@ -25,6 +25,11 @@ interface YashaChatApi {
     suspend fun signOut()
     suspend fun probeSession(): SessionProbe
     suspend fun fetchModels(): ApiResult<ModelsDto>
+    /** Issue #69: fire-and-forget `POST /api/backend/warm`. The server answers
+     * as soon as the discarded warm completion is dispatched; every failure
+     * is a lost cache miss, never user-visible. `model = null` lets the server
+     * resolve `fast_model → smart_model`. */
+    suspend fun warmBackend(model: String?): ApiResult<String>
     suspend fun listThreads(): ApiResult<List<ThreadRowDto>>
     suspend fun openThread(id: String): ApiResult<ThreadDetailDto>
     suspend fun deleteThread(id: String): ApiResult<Unit>

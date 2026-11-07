@@ -61,7 +61,11 @@ private class FakeChatApi(probes: List<SessionProbe>) : YashaChatApi {
     }
     override suspend fun signIn(identifier: String, password: String): ApiResult<Unit> = ApiResult.Ok(Unit)
     override suspend fun signOut() {}
-    override suspend fun fetchModels(): ApiResult<ModelsDto> { refreshCount++; return ApiResult.Ok(ModelsDto(emptyList())) }
+    var defaultModel: String? = "server-default"
+    override suspend fun fetchModels(): ApiResult<ModelsDto> { refreshCount++; return ApiResult.Ok(ModelsDto(emptyList(), default = defaultModel)) }
+    // Issue #69: records every warm trigger (the effective model id).
+    val warmCalls = mutableListOf<String?>()
+    override suspend fun warmBackend(model: String?): ApiResult<String> { warmCalls += model; return ApiResult.Ok("{}") }
     override suspend fun listThreads(): ApiResult<List<ThreadRowDto>> = ApiResult.Ok(emptyList())
     override suspend fun openThread(id: String): ApiResult<ThreadDetailDto> = ApiResult.Err("not_faked")
     override suspend fun deleteThread(id: String): ApiResult<Unit> = ApiResult.Ok(Unit)
@@ -131,6 +135,36 @@ class ChatViewModelSessionTest {
         assertFalse(vm.state.value.offline)
         assertEquals(0, store.clearCount)
         assertEquals(1, api.refreshCount)
+    }
+
+    // Issue #69: entering the app (valid probe) warms the backend once with
+    // the effective default model; nothing else may re-fire it.
+    @Test
+    fun `app open warms the backend with the effective default model`() {
+        val api = FakeChatApi(listOf(SessionProbe.Valid))
+        val vm = newVm(FakeStore(), api)
+        vm.start()
+        assertEquals(listOf<String?>("server-default"), api.warmCalls)
+    }
+
+    @Test
+    fun `later refreshes never re-warm`() {
+        val api = FakeChatApi(listOf(SessionProbe.Valid))
+        val vm = newVm(FakeStore(), api)
+        vm.start()
+        vm.refresh()
+        vm.retryNow() // not offline → plain refresh
+        assertEquals(1, api.warmCalls.size)
+    }
+
+    @Test
+    fun `offline and invalid entries never warm`() {
+        val offlineApi = FakeChatApi(listOf(SessionProbe.Unreachable))
+        newVm(FakeStore(), offlineApi).start()
+        val invalidApi = FakeChatApi(listOf(SessionProbe.Invalid))
+        newVm(FakeStore(), invalidApi).start()
+        assertEquals(emptyList<String?>(), offlineApi.warmCalls)
+        assertEquals(emptyList<String?>(), invalidApi.warmCalls)
     }
 
     @Test

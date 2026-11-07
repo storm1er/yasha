@@ -9,6 +9,7 @@ data class YashaEndpoints(val baseUrl: String) {
     val signOut get() = "$base/api/auth/sign-out"
     val session get() = "$base/api/auth/get-session"
     val models get() = "$base/api/models"
+    val backendWarm get() = "$base/api/backend/warm"
     val threads get() = "$base/api/threads"
     val chat get() = "$base/api/chat"
     val mcpPrefs get() = "$base/api/mcp/prefs"

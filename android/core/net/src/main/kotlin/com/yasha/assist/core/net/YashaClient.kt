@@ -78,6 +78,18 @@ fun chatRequestBody(
     cards = cards,
 )
 
+// Issue #69 warm body: the flags MUST mirror the app's real sends so the
+// warmed tool-declaration prefix matches what the first message produces —
+// interactive=false (the app never answers ask cards) + cards=true (the chat
+// screen renders render_ui cards). `model` is omitted when unknown (floaty
+// path): the server then resolves fast_model → smart_model itself. Pure —
+// unit-tested.
+internal fun warmRequestBody(model: String?): String = buildJsonObject {
+    model?.let { put("model", it) }
+    put("interactive", false)
+    put("cards", true)
+}.toString()
+
 // Maps one SSE payload JSON to a ChatEvent (pure — unit-tested). Protocol v2
 // (lib/chat/stream.ts): chunk `type` dispatch — custom data parts
 // (`data-thread`, `data-tool`, `data-error {code}`), `text-delta` for tokens,
@@ -209,6 +221,15 @@ class YashaClient(private val store: SessionStore) : YashaApi, YashaChatApi {
     }
 
     override suspend fun fetchModels(): ApiResult<ModelsDto> = decode(call(endpoints().models)) { json.decodeFromString<ModelsDto>(it) }
+
+    // Issue #69: mirrors the web's new-chat warm trigger. Fire-and-forget —
+    // callers ignore the answer; the server dedupes (60 s prefix-hash) and
+    // kill-switches (backend.warm.enabled) liberally-triggered calls itself.
+    override suspend fun warmBackend(model: String?): ApiResult<String> =
+        call(endpoints().backendWarm) {
+            header("Content-Type", "application/json")
+            post(warmRequestBody(model).toRequestBody("application/json".toMediaType()))
+        }
 
     override suspend fun listThreads(): ApiResult<List<ThreadRowDto>> = decode(call(endpoints().threads)) { json.decodeFromString<ThreadsDto>(it).threads }
 
