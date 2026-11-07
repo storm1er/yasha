@@ -5,6 +5,11 @@ generated automatically by CI from Conventional Commits landing on `main`
 ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)).
 
+## [0.4.0] - 2026-11-07
+
+### Features
+- **android:** Warm the backend from the app (app open + assistant intent) (#70) (73197b3)
+
 ## [0.3.1] - 2026-11-05
 
 ### Bug Fixes
