@@ -5,6 +5,11 @@ generated automatically by CI from Conventional Commits landing on `main`
 ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)).
 
+## [0.4.1] - 2026-11-08
+
+### Bug Fixes
+- **android:** Give the assist floaty offline awareness (#71) (6119015)
+
 ## [0.4.0] - 2026-11-07
 
 ### Features
