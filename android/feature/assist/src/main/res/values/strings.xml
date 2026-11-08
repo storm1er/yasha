@@ -17,6 +17,9 @@
     <string name="floaty_open_yasha">Open in Yasha</string>
     <string name="floaty_new_question">New question</string>
     <string name="floaty_ask_failed">Something went wrong. Try again.</string>
+    <string name="floaty_ask_failed_network">Can\'t reach the server — check your connection and try again.</string>
+    <string name="floaty_ask_failed_unauthorized">Your session has expired — sign in again in Yasha.</string>
+    <string name="floaty_offline">Can\'t reach the server. Voice input is paused until the connection is back.</string>
     <string name="floaty_attach_image">Add photo</string>
     <string name="floaty_picked_image">Photo attached</string>
     <string name="floaty_remove_image">Remove image</string>

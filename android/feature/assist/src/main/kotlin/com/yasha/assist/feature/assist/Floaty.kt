@@ -89,6 +89,7 @@ import com.yasha.assist.core.capture.AttachmentEncoder
 import com.yasha.assist.core.markdown.YashaMarkdown
 import com.yasha.assist.core.net.ChatEvent
 import com.yasha.assist.core.net.chatRequestBody
+import com.yasha.assist.core.net.SessionProbe
 import com.yasha.assist.core.net.YashaClient
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -158,6 +159,9 @@ fun FloatyScreen(onDismiss: () -> Unit) {
     var sentUrls by remember { mutableStateOf<List<String>>(emptyList()) }
     var sentText by remember { mutableStateOf("") }
     var streaming by remember { mutableStateOf(false) }
+    // Issue #66: server unreachable while the assistant is shown (airplane
+    // mode, DNS, 5xx). Banner-only state — never touches the stored session.
+    var offline by remember { mutableStateOf(false) }
 
     // Auto-listen: VAD auto-stop recording (AUDIO-REFACTO-PLAN §8). Drawing
     // the region never stops the mic; a usable take auto-sends with the crop.
@@ -235,10 +239,27 @@ fun FloatyScreen(onDismiss: () -> Unit) {
     // server's 60 s prefix-hash dedupe collapses it with the app-open warm.
     LaunchedEffect(Unit) { client.warmBackend(null) }
 
+    // Issue #66: cheap reachability probe on show (probeSession never wipes
+    // the token — Unreachable is connectivity, Invalid is left to the send
+    // path's dedicated "session expired" copy). While the banner is up, a
+    // slow loop clears it as soon as the server answers again.
+    LaunchedEffect(Unit) { offline = client.probeSession() == SessionProbe.Unreachable }
+    LaunchedEffect(offline) {
+        while (offline) {
+            delay(5_000)
+            if (client.probeSession() != SessionProbe.Unreachable) offline = false
+        }
+    }
+
     LaunchedEffect(Unit) {
         when (val r = client.audioConfig()) {
             is ApiResult.Ok -> recorder.setEnabled(r.value.enabled)
-            is ApiResult.Err -> recorder.setEnabled(false)
+            is ApiResult.Err -> {
+                recorder.setEnabled(false)
+                // A network failure must not masquerade as "voice disabled by
+                // admin": the banner names the real cause (issue #66).
+                if (r.code == "network") offline = true
+            }
         }
         if (listen.onShown(recorder.state.value.enabled, micGranted())) recorder.start()
     }
@@ -350,11 +371,20 @@ fun FloatyScreen(onDismiss: () -> Unit) {
                         ),
                     ).collect { ev ->
                         when (ev) {
-                            is ChatEvent.ThreadId -> askThreadId = ev.id
+                            is ChatEvent.ThreadId -> {
+                                // The server answered — connectivity is back (issue #66).
+                                askThreadId = ev.id
+                                offline = false
+                            }
                             is ChatEvent.Delta -> buf.append(ev.text)
                             is ChatEvent.ToolProgress -> askTools = askTools.upsertTool(ev.server, ev.name, ev.status, ev.truncated)
                             is ChatEvent.RenderCard -> {} // floaty has no card renderer (cards stay off in its body)
-                            is ChatEvent.Failure -> answerError = ev.code
+                            is ChatEvent.Failure -> {
+                                answerError = ev.code
+                                // Keep the code: the card renders network /
+                                // sign-out distinctly (issue #66).
+                                if (ev.code == "network") offline = true
+                            }
                             is ChatEvent.Done -> {}
                         }
                     }
@@ -430,6 +460,16 @@ fun FloatyScreen(onDismiss: () -> Unit) {
                 .navigationBarsPadding(),
         ) {
             val loading = streaming && answer.isNullOrEmpty()
+            // Issue #66: visible "server unreachable" state while offline —
+            // also explains why the mic button disappeared.
+            if (offline) {
+                Text(
+                    stringResource(R.string.floaty_offline),
+                    color = Color(0xFFFFB74D),
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 24.dp),
+                )
+            }
             encodeError?.let {
                 Text(
                     stringResource(if (it == "too_large") R.string.floaty_crop_too_large else R.string.floaty_crop_failed),
@@ -563,6 +603,17 @@ internal fun List<AskTool>.upsertTool(server: String, name: String, status: Stri
     return if (idx >= 0) toMutableList().also { it[idx] = tool } else this + tool
 }
 
+// Issue #66: all transport failures collapse to code "network" in YashaClient,
+// a revoked session to "unauthorized" — keep them distinguishable in the
+// answer card instead of one generic line. Pure — unit-tested.
+enum class AskErrorKind { Network, Unauthorized, Generic }
+
+internal fun askErrorKind(code: String): AskErrorKind = when (code) {
+    "network" -> AskErrorKind.Network
+    "unauthorized" -> AskErrorKind.Unauthorized
+    else -> AskErrorKind.Generic
+}
+
 @Composable
 private fun AnswerCard(
     answer: String,
@@ -641,7 +692,12 @@ private fun AnswerCard(
                     YashaMarkdown(content = answer, streaming = streaming, dark = true)
                 }
                 error?.let {
-                    Text(stringResource(R.string.floaty_ask_failed), color = Color(0xFFFF8A80))
+                    val msgRes = when (askErrorKind(it)) {
+                        AskErrorKind.Network -> R.string.floaty_ask_failed_network
+                        AskErrorKind.Unauthorized -> R.string.floaty_ask_failed_unauthorized
+                        AskErrorKind.Generic -> R.string.floaty_ask_failed
+                    }
+                    Text(stringResource(msgRes), color = Color(0xFFFF8A80))
                 }
             }
         }
